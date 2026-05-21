@@ -1,0 +1,36 @@
+# Local measurement data and proprietary/reference material
+Xucongs-working-directory/
+software-manuals/
+recipes/
+
+# Large microscopy/result formats
+*.plux
+*.raw
+*.sur
+*.sdf
+*.smr
+
+# Generated analysis outputs
+*.png
+*.jpg
+*.jpeg
+*.csv
+*.xlsx
+*.pdf
+*.html
+!plux-browser-app/index.html
+
+# JavaScript dependencies/build outputs
+node_modules/
+dist/
+.vite/
+
+# Python/cache/temp files
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS/editor clutter
+.DS_Store
+Thumbs.db
+desktop.ini
