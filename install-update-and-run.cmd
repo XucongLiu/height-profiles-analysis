@@ -14,21 +14,71 @@ echo.
 where git >nul 2>nul
 if %errorlevel% neq 0 (
   echo Git was not found on this computer.
-  echo Please install Git for Windows from:
-  echo https://git-scm.com/download/win
+  echo Trying to install Git with winget...
   echo.
-  pause
-  exit /b 1
+  where winget >nul 2>nul
+  if %errorlevel% neq 0 (
+    echo winget was not found, so Git cannot be installed automatically.
+    echo Please install Git for Windows from:
+    echo https://git-scm.com/download/win
+    echo.
+    pause
+    exit /b 1
+  )
+  winget install --id Git.Git --exact --source winget --accept-source-agreements --accept-package-agreements
+  if %errorlevel% neq 0 (
+    echo.
+    echo Git installation failed.
+    echo Please install Git manually from:
+    echo https://git-scm.com/download/win
+    echo.
+    pause
+    exit /b 1
+  )
+  set "PATH=%PATH%;%ProgramFiles%\Git\cmd;%ProgramFiles(x86)%\Git\cmd"
+  where git >nul 2>nul
+  if %errorlevel% neq 0 (
+    echo.
+    echo Git was installed, but this command window cannot find it yet.
+    echo Close this window and double-click this file again.
+    pause
+    exit /b 1
+  )
 )
 
 where npx >nul 2>nul
 if %errorlevel% neq 0 (
   echo Node.js / npx was not found on this computer.
-  echo Please install Node.js LTS from:
-  echo https://nodejs.org/
+  echo Trying to install Node.js LTS with winget...
   echo.
-  pause
-  exit /b 1
+  where winget >nul 2>nul
+  if %errorlevel% neq 0 (
+    echo winget was not found, so Node.js cannot be installed automatically.
+    echo Please install Node.js LTS from:
+    echo https://nodejs.org/
+    echo.
+    pause
+    exit /b 1
+  )
+  winget install --id OpenJS.NodeJS.LTS --exact --source winget --accept-source-agreements --accept-package-agreements
+  if %errorlevel% neq 0 (
+    echo.
+    echo Node.js installation failed.
+    echo Please install Node.js LTS manually from:
+    echo https://nodejs.org/
+    echo.
+    pause
+    exit /b 1
+  )
+  set "PATH=%PATH%;%ProgramFiles%\nodejs;%APPDATA%\npm"
+  where npx >nul 2>nul
+  if %errorlevel% neq 0 (
+    echo.
+    echo Node.js was installed, but this command window cannot find npx yet.
+    echo Close this window and double-click this file again.
+    pause
+    exit /b 1
+  )
 )
 
 if not exist "%INSTALL_DIR%\.git" (

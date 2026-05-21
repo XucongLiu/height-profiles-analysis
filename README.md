@@ -34,6 +34,8 @@ Double-click it. It will clone this public GitHub repository into:
 
 Each later double-click updates the local copy with `git pull` and starts the app again.
 
+If Git or Node.js/npx is missing, the launcher first tries to install them automatically with Windows Package Manager (`winget`). If `winget` is not available or installation is blocked by company policy, it prints the manual download links instead.
+
 ## Requirements
 
 - Git
