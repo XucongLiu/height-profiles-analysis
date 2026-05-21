@@ -18,6 +18,22 @@ http://127.0.0.1:4173
 
 The app runs locally in the browser. Upload `.plux` files, a folder containing `.plux` files, or a `.zip` containing multiple `.plux` files.
 
+## First-Time Install on Another Windows Computer
+
+Send or download this file:
+
+```text
+install-update-and-run.cmd
+```
+
+Double-click it. It will clone this public GitHub repository into:
+
+```text
+%USERPROFILE%\height-profiles-analysis
+```
+
+Each later double-click updates the local copy with `git pull` and starts the app again.
+
 ## Requirements
 
 - Git
