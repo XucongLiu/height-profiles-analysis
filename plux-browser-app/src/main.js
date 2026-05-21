@@ -36,7 +36,21 @@ function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]}" /></svg>`;
 }
 
+function tip(text) {
+  return `title="${escapeHtml(text)}"`;
+}
+
 function renderShell() {
+  const tips = {
+    detrend: "Remove a best-fit tilted plane before clustering. This compensates for sample tilt during interferometry measurement.",
+    levelMode: "Choose which pixels define the leveling plane. Higher land only is preferred when the original machined land is the flat reference surface.",
+    clusters: "Number of height groups for k-means clustering. Use 3 when land, basin, and transition/rim populations are visible.",
+    clipPercent: "Clip the highest and lowest height tails before clustering so extreme spikes do not pull the cluster centers.",
+    edgeRadiusPx: "Shrink each plateau mask inward by this many pixels before measuring roughness. Larger values remove more border/sidewall pixels.",
+    gradientRejectPercent: "Exclude the highest-gradient pixels inside each plateau mask. This removes sidewalls, steep transitions, scratches, and fringe artifacts.",
+    trimPercent: "After core extraction, remove this percent from both the high and low height tails inside each plateau before computing statistics.",
+    workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
+  };
   root.innerHTML = `
     <main class="app">
       <section class="topbar">
@@ -65,19 +79,19 @@ function renderShell() {
         </div>
         <div class="settings">
           <div class="settingsTitle">${icon("sliders")}Analysis</div>
-          <label><input id="detrend" type="checkbox" checked /> Remove plane trend before clustering</label>
-          <label>Leveling basis
-            <select id="levelMode">
+          <label ${tip(tips.detrend)}><input id="detrend" type="checkbox" checked /> Remove plane trend before clustering</label>
+          <label ${tip(tips.levelMode)}>Leveling basis
+            <select id="levelMode" ${tip(tips.levelMode)}>
               <option value="higher-land" selected>Higher land only</option>
               <option value="all">All measured points</option>
             </select>
           </label>
-          <label>Clusters <input id="clusters" type="number" min="2" max="5" value="3" /></label>
-          <label>Clip tails % <input id="clipPercent" type="number" step="0.5" min="0" max="10" value="1" /></label>
-          <label>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" /></label>
-          <label>Gradient exclusion % <input id="gradientRejectPercent" type="number" step="1" min="0" max="30" value="5" /></label>
-          <label>Trim plateau % <input id="trimPercent" type="number" step="0.5" min="0" max="10" value="2.5" /></label>
-          <label>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" /></label>
+          <label ${tip(tips.clusters)}>Clusters <input id="clusters" type="number" min="2" max="5" value="3" ${tip(tips.clusters)} /></label>
+          <label ${tip(tips.clipPercent)}>Clip tails % <input id="clipPercent" type="number" step="0.5" min="0" max="10" value="1" ${tip(tips.clipPercent)} /></label>
+          <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
+          <label ${tip(tips.gradientRejectPercent)}>Gradient exclusion % <input id="gradientRejectPercent" type="number" step="1" min="0" max="30" value="5" ${tip(tips.gradientRejectPercent)} /></label>
+          <label ${tip(tips.trimPercent)}>Trim plateau % <input id="trimPercent" type="number" step="0.5" min="0" max="10" value="2.5" ${tip(tips.trimPercent)} /></label>
+          <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
       <section class="statusLine"><span class="dot"></span><span id="status">Ready</span><strong id="summary"></strong></section>
@@ -733,7 +747,22 @@ function renderResults() {
       </header>
       <div class="visuals">
         <figure><img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" /><figcaption>Detrended height map - cyan basin-core contour, white land-core contour - 1-99% scale ${fmt(r.heatmap.low)} to ${fmt(r.heatmap.high)} um</figcaption></figure>
-        <figure><img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" /><figcaption>Cluster mask - blue basin core, green land core, orange excluded population, contours show measured statistic regions</figcaption></figure>
+        <figure>
+          <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
+          <figcaption>
+            <span>Cluster mask and measurement regions</span>
+            <span class="legend">
+              <span><i class="swatch basinCore"></i>Basin core, measured</span>
+              <span><i class="swatch basinAssigned"></i>Basin assigned, excluded</span>
+              <span><i class="swatch landCore"></i>Land core, measured</span>
+              <span><i class="swatch landAssigned"></i>Land assigned, excluded</span>
+              <span><i class="swatch excluded"></i>Transition or other cluster</span>
+              <span><i class="swatch invalid"></i>Invalid or unmeasured</span>
+              <span><i class="swatch basinContour"></i>Cyan basin contour</span>
+              <span><i class="swatch landContour"></i>White land contour</span>
+            </span>
+          </figcaption>
+        </figure>
       </div>
       <table>
         <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th></tr></thead>

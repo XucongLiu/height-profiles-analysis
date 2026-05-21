@@ -44,5 +44,11 @@ All processing runs client-side in the browser. Heavy PLUX analysis is executed 
 
 Contour colors:
 
-- cyan: lower-basin core used for basin statistics
-- white: higher-land core used for land statistics
+- dark blue: lower-basin core used for basin statistics
+- light blue: pixels assigned to the lower basin, but excluded from basin statistics
+- dark green: higher-land core used for land statistics
+- light green: pixels assigned to the higher land, but excluded from land statistics
+- orange: transition, rim, sidewall, or other non-plateau height population
+- dark gray/black: invalid or unmeasured pixels
+- cyan outline: lower-basin core contour
+- white outline: higher-land core contour
