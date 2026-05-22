@@ -524,6 +524,66 @@ function boxBlurFinite(values, width, height, radius) {
   return out;
 }
 
+function gaussianKernel1d(sigma) {
+  if (sigma <= 0) return new Float32Array([1]);
+  const radius = Math.max(1, Math.round(sigma * 3));
+  const kernel = new Float32Array(radius * 2 + 1);
+  let sum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel[i + radius] = v;
+    sum += v;
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
+  return kernel;
+}
+
+function gaussianBlur(values, width, height, sigma) {
+  const kernel = gaussianKernel1d(sigma);
+  const radius = Math.floor(kernel.length / 2);
+  const horizontal = new Float32Array(values.length);
+  const out = new Float32Array(values.length);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const sx = Math.max(0, Math.min(width - 1, x + k));
+        sum += values[row + sx] * kernel[k + radius];
+      }
+      horizontal[row + x] = sum;
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const sy = Math.max(0, Math.min(height - 1, y + k));
+        sum += horizontal[sy * width + x] * kernel[k + radius];
+      }
+      out[row + x] = sum;
+    }
+  }
+  return out;
+}
+
+function gradientMagnitude(values, width, height) {
+  const out = new Float32Array(values.length);
+  for (let y = 0; y < height; y++) {
+    const ym = Math.max(0, y - 1);
+    const yp = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x++) {
+      const xm = Math.max(0, x - 1);
+      const xp = Math.min(width - 1, x + 1);
+      const gx = 0.5 * (values[y * width + xp] - values[y * width + xm]);
+      const gy = 0.5 * (values[yp * width + x] - values[ym * width + x]);
+      out[y * width + x] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return out;
+}
+
 function countMask(mask) {
   let count = 0;
   for (let i = 0; i < mask.length; i++) count += mask[i] ? 1 : 0;
@@ -759,6 +819,17 @@ function simplifyCurve(points, tolerance) {
   return simplified;
 }
 
+function simplifyCurveLimited(points, tolerance, maxPoints) {
+  if (!maxPoints || points.length <= maxPoints) return simplifyCurve(points, tolerance);
+  let epsilon = Math.max(0.5, tolerance);
+  let simplified = simplifyCurve(points, epsilon);
+  for (let i = 0; i < 12 && simplified.length > maxPoints; i++) {
+    epsilon *= 1.6;
+    simplified = simplifyCurve(points, epsilon);
+  }
+  return simplified;
+}
+
 function interpolateCurve(points, minY, maxY) {
   const values = new Float32Array(maxY - minY + 1);
   if (!points.length) return values;
@@ -773,7 +844,7 @@ function interpolateCurve(points, minY, maxY) {
   return values;
 }
 
-function vectorizeMaskByRowBoundaries(source, width, height, minPixels, tolerance) {
+function vectorizeMaskByRowBoundaries(source, width, height, minPixels, tolerance, maxEdges = 0) {
   if (tolerance <= 0) return source;
   const seen = new Uint8Array(source.length);
   const out = new Uint8Array(source.length);
@@ -825,8 +896,9 @@ function vectorizeMaskByRowBoundaries(source, width, height, minPixels, toleranc
       for (const idx of queue) out[idx] = 1;
       continue;
     }
-    const fittedLeft = interpolateCurve(simplifyCurve(leftPoints, tolerance), minY, maxY);
-    const fittedRight = interpolateCurve(simplifyCurve(rightPoints, tolerance), minY, maxY);
+    const maxCurvePoints = maxEdges > 0 ? Math.max(2, Math.ceil(maxEdges / 2) + 1) : 0;
+    const fittedLeft = interpolateCurve(simplifyCurveLimited(leftPoints, tolerance, maxCurvePoints), minY, maxY);
+    const fittedRight = interpolateCurve(simplifyCurveLimited(rightPoints, tolerance, maxCurvePoints), minY, maxY);
     for (let y = minY; y <= maxY; y++) {
       const row = y * width;
       let x0 = Math.round(fittedLeft[y - minY]);
@@ -835,6 +907,31 @@ function vectorizeMaskByRowBoundaries(source, width, height, minPixels, toleranc
       x0 = Math.max(0, Math.min(width - 1, x0));
       x1 = Math.max(0, Math.min(width - 1, x1));
       for (let x = x0; x <= x1; x++) out[row + x] = 1;
+    }
+  }
+  return out;
+}
+
+function dilateMask(mask, width, height, radius) {
+  if (radius <= 0) return mask.slice();
+  const out = new Uint8Array(mask.length);
+  const r2 = radius * radius;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (!mask[idx]) continue;
+      const y0 = Math.max(0, y - radius);
+      const y1 = Math.min(height - 1, y + radius);
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(width - 1, x + radius);
+      for (let yy = y0; yy <= y1; yy++) {
+        const dy = yy - y;
+        const row = yy * width;
+        for (let xx = x0; xx <= x1; xx++) {
+          const dx = xx - x;
+          if (dx * dx + dy * dy <= r2) out[row + xx] = 1;
+        }
+      }
     }
   }
   return out;
@@ -861,8 +958,9 @@ function resolveMaskOverlaps(lowMask, highMask, segmentationValues, lowCenter, h
 }
 
 function clusterPlateaus(values, width, height, segmentationOverride = null) {
+  const edgePolygonMode = options.segmentationMode === "edge-polygons";
   const spatialMode = options.segmentationMode !== "height";
-  const segmentationValues = segmentationOverride || (spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values);
+  const segmentationValues = segmentationOverride || (edgePolygonMode ? gaussianBlur(values, width, height, Math.max(0, Number(options.edgeSigmaPx ?? 7))) : spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values);
   const sample = sampleFinite(segmentationValues, options.maxSamples);
   const clipLo = percentile(sample, options.clipPercent);
   const clipHi = percentile(sample, 100 - options.clipPercent);
@@ -895,9 +993,17 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
   const plateau = counts.map((count, label) => ({ count, label })).sort((a, b) => b.count - a.count).slice(0, 2).map((x) => x.label).sort((a, b) => centers[a] - centers[b]);
   const lowAssigned = new Uint8Array(values.length);
   const highAssigned = new Uint8Array(values.length);
+  let edgeMask = null;
+  if (edgePolygonMode) {
+    const gradients = gradientMagnitude(segmentationValues, width, height);
+    const sampleGradients = sampleFinite(gradients, options.maxSamples);
+    const edgeThreshold = percentile(sampleGradients, Math.max(50, Math.min(99.9, Number(options.edgePercentile ?? 96))));
+    edgeMask = new Uint8Array(values.length);
+    for (let i = 0; i < gradients.length; i++) if (gradients[i] >= edgeThreshold) edgeMask[i] = 1;
+  }
   for (let i = 0; i < values.length; i++) {
-    if (labels[i] === plateau[0]) lowAssigned[i] = 1;
-    if (labels[i] === plateau[1]) highAssigned[i] = 1;
+    if (labels[i] === plateau[0] && !(edgeMask && edgeMask[i])) lowAssigned[i] = 1;
+    if (labels[i] === plateau[1] && !(edgeMask && edgeMask[i])) highAssigned[i] = 1;
   }
   let lowCore = lowAssigned;
   let highCore = highAssigned;
@@ -924,8 +1030,17 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     fillSmallEnclosedHoles(highCore, width, height, minPixels);
     const requestedTolerance = Number(options.boundaryEpsilonPx ?? 18);
     const vectorTolerance = Number.isFinite(requestedTolerance) ? Math.max(0, Math.min(200, requestedTolerance)) : 18;
-    lowCore = vectorizeMaskByRowBoundaries(lowCore, width, height, minPixels, vectorTolerance);
-    highCore = vectorizeMaskByRowBoundaries(highCore, width, height, minPixels, vectorTolerance);
+    const basinMaxEdges = edgePolygonMode ? 10 : 0;
+    const landMaxEdges = edgePolygonMode ? 30 : 0;
+    lowCore = vectorizeMaskByRowBoundaries(lowCore, width, height, minPixels, vectorTolerance, basinMaxEdges);
+    if (edgePolygonMode) {
+      const offset = Math.max(0, Math.min(80, Math.round(Number(options.ridgeOffsetPx ?? 20))));
+      const basinFence = dilateMask(lowCore, width, height, offset);
+      for (let i = 0; i < highCore.length; i++) if (basinFence[i]) highCore[i] = 0;
+      highCore = maskFromLargeComponents(highCore, width, height, minPixels);
+      fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    }
+    highCore = vectorizeMaskByRowBoundaries(highCore, width, height, minPixels, vectorTolerance, landMaxEdges);
     fillSmallEnclosedHoles(lowCore, width, height, minPixels);
     fillSmallEnclosedHoles(highCore, width, height, minPixels);
     resolveMaskOverlaps(lowCore, highCore, segmentationValues, centers[plateau[0]], centers[plateau[1]]);
@@ -944,7 +1059,7 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     highMask: highCore,
     lowComponents: componentSummary(lowCore, width, height, spatialMode ? minPixels : 1),
     highComponents: componentSummary(highCore, width, height, spatialMode ? minPixels : 1),
-    segmentationMode: spatialMode ? "cca-geometry" : "height"
+    segmentationMode: edgePolygonMode ? "edge-polygons" : spatialMode ? "cca-geometry" : "height"
   };
 }
 
@@ -1059,7 +1174,7 @@ async function analyze(measurement) {
   } else if (options.detrend) {
     values = detrendPlane(values, measurement.width, measurement.height);
   }
-  const denoisedSegmentation = fftLowPassForSegmentation(values, measurement.width, measurement.height, options.fftDenoiseStrength);
+  const denoisedSegmentation = options.segmentationMode === "edge-polygons" ? null : fftLowPassForSegmentation(values, measurement.width, measurement.height, options.fftDenoiseStrength);
   const cluster = clusterPlateaus(values, measurement.width, measurement.height, denoisedSegmentation);
   const low = statsForMask(values, cluster.lowMask);
   const high = statsForMask(values, cluster.highMask);
@@ -1083,6 +1198,9 @@ async function analyze(measurement) {
     segmentationMode: cluster.segmentationMode,
     smoothRadiusPx: options.smoothRadiusPx,
     boundaryEpsilonPx: options.boundaryEpsilonPx ?? 18,
+    edgeSigmaPx: options.edgeSigmaPx ?? 7,
+    edgePercentile: options.edgePercentile ?? 96,
+    ridgeOffsetPx: options.ridgeOffsetPx ?? 20,
     minRegionPercent: options.minRegionPercent || 0,
     fftDenoiseStrength: options.fftDenoiseStrength || 0,
     interpolatedPoints: reconstruction.interpolated,
