@@ -111,6 +111,17 @@ def gradient_magnitude(z: np.ndarray) -> np.ndarray:
     return np.sqrt(gx * gx + gy * gy)
 
 
+def fft_low_pass(image: np.ndarray, keep_fraction: float) -> np.ndarray:
+    keep_fraction = float(np.clip(keep_fraction, 0.001, 1.0))
+    spectrum = np.fft.rfft2(image)
+    fy = np.fft.fftfreq(image.shape[0])[:, None]
+    fx = np.fft.rfftfreq(image.shape[1])[None, :]
+    radius = np.sqrt(fx * fx + fy * fy)
+    cutoff = keep_fraction * float(radius.max())
+    spectrum[radius > cutoff] = 0
+    return np.fft.irfft2(spectrum, s=image.shape).astype(np.float32)
+
+
 def render_edge_map(
     z: np.ndarray,
     name: str,
@@ -118,11 +129,21 @@ def render_edge_map(
     sigma: float,
     edge_percentile: float,
     max_width: int,
+    fft_keep: float | None,
 ) -> Path:
     detrended = detrend_plane(z)
     finite = np.isfinite(detrended)
     filled = fill_missing(detrended)
-    smoothed = gaussian_blur(filled, sigma)
+    if fft_keep is None:
+        smoothed = gaussian_blur(filled, sigma)
+        method = f"gaussian sigma {sigma:g}px"
+    else:
+        smoothed = fft_low_pass(filled, fft_keep)
+        if sigma > 0:
+            smoothed = gaussian_blur(smoothed, sigma)
+            method = f"FFT keep {fft_keep:.3f} + gaussian sigma {sigma:g}px"
+        else:
+            method = f"FFT keep {fft_keep:.3f}"
     grad = gradient_magnitude(smoothed)
     grad[~finite] = 0
     finite_grad = grad[finite]
@@ -150,7 +171,7 @@ def render_edge_map(
     draw.text((margin, margin), name, fill=(0, 0, 0), font=font)
     draw.text(
         (margin, margin + 18),
-        f"gradient edge map | gaussian sigma {sigma:g}px | red >= p{edge_percentile:g} | ridge width target 10-20 px",
+        f"gradient edge map | {method} | red >= p{edge_percentile:g} | ridge width target 10-20 px",
         fill=(0, 0, 0),
         font=font,
     )
@@ -183,6 +204,7 @@ def main() -> None:
     parser.add_argument("input_dir", type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path("edge-detection-test"))
     parser.add_argument("--sigma", type=float, default=3.0)
+    parser.add_argument("--fft-keep", type=float, default=None, help="Optional radial FFT low-pass keep fraction, e.g. 0.04 keeps only very low frequencies.")
     parser.add_argument("--edge-percentile", type=float, default=94.0)
     parser.add_argument("--max-width", type=int, default=1400)
     args = parser.parse_args()
@@ -194,7 +216,7 @@ def main() -> None:
     for plux in plux_files:
         z = read_plux_height(plux)
         out = args.out_dir / f"{plux.stem}_edge_map.png"
-        outputs.append(render_edge_map(z, plux.name, out, args.sigma, args.edge_percentile, args.max_width))
+        outputs.append(render_edge_map(z, plux.name, out, args.sigma, args.edge_percentile, args.max_width, args.fft_keep))
         print(out)
     print(make_contact_sheet(outputs, args.out_dir / "edge_maps_contact_sheet.png"))
 
