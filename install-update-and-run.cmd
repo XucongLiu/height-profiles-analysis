@@ -4,6 +4,11 @@ setlocal
 set "REPO_URL=https://github.com/XucongLiu/height-profiles-analysis.git"
 set "INSTALL_DIR=%USERPROFILE%\height-profiles-analysis"
 set "APP_URL=http://127.0.0.1:4173"
+set "CHECK_ONLY=0"
+set "NO_SERVER=0"
+
+if /I "%~1"=="--check" set "CHECK_ONLY=1"
+if /I "%~1"=="--no-server" set "NO_SERVER=1"
 
 title PLUX Surface Analyzer
 echo.
@@ -81,6 +86,24 @@ if %errorlevel% neq 0 (
   )
 )
 
+if "%CHECK_ONLY%"=="1" (
+  echo Prerequisite check passed.
+  echo.
+  git --version
+  node --version
+  npx --version
+  echo.
+  where winget >nul 2>nul
+  if %errorlevel% equ 0 (
+    echo winget is available for automatic prerequisite installation.
+  ) else (
+    echo winget is not available. Automatic prerequisite installation will not work.
+  )
+  echo.
+  pause
+  exit /b 0
+)
+
 if not exist "%INSTALL_DIR%\.git" (
   if exist "%INSTALL_DIR%" (
     echo The folder already exists, but it is not a Git repository:
@@ -112,6 +135,14 @@ if not exist "%INSTALL_DIR%\.git" (
 
 cd /d "%INSTALL_DIR%\plux-browser-app"
 echo.
+if "%NO_SERVER%"=="1" (
+  echo Clone/update test passed. Server start was skipped because --no-server was used.
+  echo App folder:
+  echo %CD%
+  echo.
+  exit /b 0
+)
+
 echo Starting local app server...
 echo Opening %APP_URL%
 echo.

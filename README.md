@@ -36,6 +36,15 @@ Each later double-click updates the local copy with `git pull` and starts the ap
 
 If Git or Node.js/npx is missing, the launcher first tries to install them automatically with Windows Package Manager (`winget`). If `winget` is not available or installation is blocked by company policy, it prints the manual download links instead.
 
+Launcher test modes:
+
+```powershell
+.\install-update-and-run.cmd --check
+.\install-update-and-run.cmd --no-server
+```
+
+`--check` verifies Git, Node.js, npx, and winget. `--no-server` clones or updates the repository, then stops before starting the browser server.
+
 ## Requirements
 
 - Git
