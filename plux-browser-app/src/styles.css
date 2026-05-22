@@ -250,7 +250,7 @@ p {
   margin-bottom: 14px;
 }
 
-.result header span {
+.stepValue {
   color: #0d6b2c;
   font-weight: 760;
   white-space: nowrap;
@@ -258,13 +258,21 @@ p {
 
 .resultActions {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.runControls {
+  display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.resultActions label {
+.runControls label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -272,7 +280,7 @@ p {
   font-size: 13px;
 }
 
-.resultActions input {
+.runControls input {
   width: 68px;
   height: 34px;
   border: 1px solid #cbd5e0;
@@ -281,12 +289,18 @@ p {
 }
 
 .mapStatus {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   color: #536174;
   font-weight: 520;
-  white-space: normal;
+  font-size: 13px;
+  max-width: 360px;
+  text-align: right;
+}
+
+.mapStatus.idle {
+  color: #7b8796;
 }
 
 .mapStatus.done {
@@ -304,6 +318,14 @@ p {
   border: 2px solid #c4cfdb;
   border-top-color: #7f8ea3;
   animation: spin 1s linear infinite;
+  flex: 0 0 auto;
+}
+
+.miniDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8fa0b4;
   flex: 0 0 auto;
 }
 

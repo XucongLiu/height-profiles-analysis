@@ -825,9 +825,11 @@ function renderResults() {
           <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <div class="resultActions">
-          <span>${fmt(r.heightDifference)} um step</span>
-          <label>FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
-          <button data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>Rerun Map</button>
+          <div class="runControls">
+            <span class="stepValue">${fmt(r.heightDifference)} um step</span>
+            <label title="FFT low-pass denoise strength used for segmentation only. Higher values remove more high-frequency content before clustering.">FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
+            <button data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>Rerun Map</button>
+          </div>
           ${mapStatusMarkup(idx)}
         </div>
       </header>
@@ -871,9 +873,9 @@ function renderResults() {
 
 function mapStatusMarkup(idx) {
   const state = mapStatuses[idx];
-  if (!state?.text) return "";
-  const cls = state.error ? "mapStatus error" : state.busy ? "mapStatus busy" : "mapStatus done";
-  return `<span class="${cls}">${state.busy ? '<i class="miniSpinner"></i>' : ""}${escapeHtml(state.text)}</span>`;
+  const text = state?.text || "Ready";
+  const cls = state?.error ? "mapStatus error" : state?.busy ? "mapStatus busy" : state?.text ? "mapStatus done" : "mapStatus idle";
+  return `<div class="${cls}">${state?.busy ? '<i class="miniSpinner"></i>' : '<i class="miniDot"></i>'}${escapeHtml(text)}</div>`;
 }
 
 function escapeHtml(text) {
