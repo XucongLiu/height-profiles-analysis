@@ -268,6 +268,69 @@ function gradientFilteredMask(values, mask, width, height, rejectPercent) {
   return filtered;
 }
 
+function boxBlurFinite(values, width, height, radius) {
+  radius = Math.max(0, Math.floor(radius || 0));
+  if (radius <= 0) return values;
+  const horizontal = new Float32Array(values.length);
+  const horizontalCount = new Uint16Array(values.length);
+  for (let y = 0; y < height; y++) {
+    let sum = 0;
+    let count = 0;
+    const row = y * width;
+    for (let x = -radius; x <= radius && x < width; x++) {
+      if (x >= 0) {
+        const v = values[row + x];
+        if (Number.isFinite(v)) { sum += v; count++; }
+      }
+    }
+    for (let x = 0; x < width; x++) {
+      const idx = row + x;
+      if (count) {
+        horizontal[idx] = sum / count;
+        horizontalCount[idx] = 1;
+      } else {
+        horizontal[idx] = NaN;
+      }
+      const removeX = x - radius;
+      const addX = x + radius + 1;
+      if (removeX >= 0) {
+        const v = values[row + removeX];
+        if (Number.isFinite(v)) { sum -= v; count--; }
+      }
+      if (addX < width) {
+        const v = values[row + addX];
+        if (Number.isFinite(v)) { sum += v; count++; }
+      }
+    }
+  }
+  const out = new Float32Array(values.length);
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    let count = 0;
+    for (let y = -radius; y <= radius && y < height; y++) {
+      if (y >= 0) {
+        const idx = y * width + x;
+        if (horizontalCount[idx]) { sum += horizontal[idx]; count++; }
+      }
+    }
+    for (let y = 0; y < height; y++) {
+      const idx = y * width + x;
+      out[idx] = count ? sum / count : NaN;
+      const removeY = y - radius;
+      const addY = y + radius + 1;
+      if (removeY >= 0) {
+        const removeIdx = removeY * width + x;
+        if (horizontalCount[removeIdx]) { sum -= horizontal[removeIdx]; count--; }
+      }
+      if (addY < height) {
+        const addIdx = addY * width + x;
+        if (horizontalCount[addIdx]) { sum += horizontal[addIdx]; count++; }
+      }
+    }
+  }
+  return out;
+}
+
 function countMask(mask) {
   let count = 0;
   for (let i = 0; i < mask.length; i++) count += mask[i] ? 1 : 0;
@@ -275,7 +338,9 @@ function countMask(mask) {
 }
 
 function clusterPlateaus(values, width, height) {
-  const sample = sampleFinite(values, options.maxSamples);
+  const spatialMode = options.segmentationMode !== "height";
+  const segmentationValues = spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values;
+  const sample = sampleFinite(segmentationValues, options.maxSamples);
   const clipLo = percentile(sample, options.clipPercent);
   const clipHi = percentile(sample, 100 - options.clipPercent);
   const clipped = sample.map((v) => Math.min(clipHi, Math.max(clipLo, v)));
@@ -284,8 +349,8 @@ function clusterPlateaus(values, width, height) {
   labels.fill(-1);
   const counts = Array(options.clusters).fill(0);
   for (let i = 0; i < values.length; i++) {
-    const raw = values[i];
-    if (!Number.isFinite(raw)) continue;
+    const raw = segmentationValues[i];
+    if (!Number.isFinite(raw) || !Number.isFinite(values[i])) continue;
     const v = Math.min(clipHi, Math.max(clipLo, raw));
     let best = 0, dist = Math.abs(v - centers[0]);
     for (let j = 1; j < centers.length; j++) {
@@ -308,15 +373,17 @@ function clusterPlateaus(values, width, height) {
     lowCore = lowAssigned;
     highCore = highAssigned;
   }
-  lowCore = gradientFilteredMask(values, lowCore, width, height, options.gradientRejectPercent);
-  highCore = gradientFilteredMask(values, highCore, width, height, options.gradientRejectPercent);
-  lowCore = trimExistingMask(values, lowCore, options.trimPercent);
-  highCore = trimExistingMask(values, highCore, options.trimPercent);
-  if (countMask(lowCore) < 100 || countMask(highCore) < 100) {
-    lowCore = trimMask(values, labels, plateau[0], options.trimPercent);
-    highCore = trimMask(values, labels, plateau[1], options.trimPercent);
+  if (!spatialMode) {
+    lowCore = gradientFilteredMask(values, lowCore, width, height, options.gradientRejectPercent);
+    highCore = gradientFilteredMask(values, highCore, width, height, options.gradientRejectPercent);
+    lowCore = trimExistingMask(values, lowCore, options.trimPercent);
+    highCore = trimExistingMask(values, highCore, options.trimPercent);
+    if (countMask(lowCore) < 100 || countMask(highCore) < 100) {
+      lowCore = trimMask(values, labels, plateau[0], options.trimPercent);
+      highCore = trimMask(values, labels, plateau[1], options.trimPercent);
+    }
   }
-  return { width, height, labels, centers, counts, lowLabel: plateau[0], highLabel: plateau[1], lowMask: lowCore, highMask: highCore };
+  return { width, height, labels, centers, counts, lowLabel: plateau[0], highLabel: plateau[1], lowMask: lowCore, highMask: highCore, segmentationMode: spatialMode ? "spatial" : "height" };
 }
 
 function statsForMask(values, mask) {
@@ -361,10 +428,18 @@ async function canvasToBlob(canvas) {
   return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
 
-async function renderHeatmap(values, width, height, cluster, maxW = 520) {
-  const sample = sampleFinite(values, 500000);
-  const lo = percentile(sample, 1);
-  const hi = percentile(sample, 99);
+async function renderHeatmap(values, width, height, cluster, zeroLevel, maxW = 520) {
+  const adjusted = new Float32Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    adjusted[i] = Number.isFinite(v) ? v - zeroLevel : NaN;
+  }
+  const sample = sampleFinite(adjusted, 500000);
+  const p1 = percentile(sample, 1);
+  const p99 = percentile(sample, 99);
+  const maxAbs = Math.max(Math.abs(p1), Math.abs(p99), 1e-9);
+  const lo = -maxAbs;
+  const hi = maxAbs;
   const scale = Math.min(1, maxW / width);
   const w = Math.max(1, Math.round(width * scale));
   const h = Math.max(1, Math.round(height * scale));
@@ -376,7 +451,7 @@ async function renderHeatmap(values, width, height, cluster, maxW = 520) {
     for (let x = 0; x < w; x++) {
       const sx = Math.min(width - 1, Math.floor(x / scale));
       const idx = sy * width + sx;
-      const v = values[idx];
+      const v = adjusted[idx];
       const p = (y * w + x) * 4;
       let color = Number.isFinite(v) ? paletteColor((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) : [28, 28, 28];
       color = contourColor(cluster, idx) || color;
@@ -384,7 +459,7 @@ async function renderHeatmap(values, width, height, cluster, maxW = 520) {
     }
   }
   ctx.putImageData(img, 0, 0);
-  return { blob: await canvasToBlob(canvas), low: lo, high: hi };
+  return { blob: await canvasToBlob(canvas), low: lo, high: hi, zeroLevel };
 }
 
 async function renderClusterMask(cluster, width, height, maxW = 520) {
@@ -424,7 +499,7 @@ async function analyze(measurement) {
   const cluster = clusterPlateaus(values, measurement.width, measurement.height);
   const low = statsForMask(values, cluster.lowMask);
   const high = statsForMask(values, cluster.highMask);
-  const heatmap = await renderHeatmap(values, measurement.width, measurement.height, cluster);
+  const heatmap = await renderHeatmap(values, measurement.width, measurement.height, cluster, high.mean);
   const maskBlob = await renderClusterMask(cluster, measurement.width, measurement.height);
   const measuredFraction = finiteFraction(values);
   return {
@@ -438,6 +513,8 @@ async function analyze(measurement) {
     levelMode: options.detrend ? options.levelMode : "none",
     edgeRadiusPx: options.edgeRadiusPx,
     gradientRejectPercent: options.gradientRejectPercent,
+    segmentationMode: cluster.segmentationMode,
+    smoothRadiusPx: options.smoothRadiusPx,
     low,
     high,
     heatmap,

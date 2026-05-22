@@ -19,6 +19,8 @@ let options = {
   trimPercent: 2.5,
   edgeRadiusPx: 5,
   gradientRejectPercent: 5,
+  segmentationMode: "spatial",
+  smoothRadiusPx: 12,
   workerCount: Math.min(6, Math.max(2, Math.floor((navigator.hardwareConcurrency || 8) / 2))),
   maxSamples: 700000,
 };
@@ -49,6 +51,8 @@ function renderShell() {
     edgeRadiusPx: "Shrink each plateau mask inward by this many pixels before measuring roughness. Larger values remove more border/sidewall pixels.",
     gradientRejectPercent: "Exclude the highest-gradient pixels inside each plateau mask. This removes sidewalls, steep transitions, scratches, and fringe artifacts.",
     trimPercent: "After core extraction, remove this percent from both the high and low height tails inside each plateau before computing statistics.",
+    segmentationMode: "Spatial areas classifies a smoothed height map to find continuous land/basin regions, then measures the original detrended data inside those regions.",
+    smoothRadiusPx: "Radius of the low-pass smoothing used for spatial area detection. Larger values ignore more local roughness and isolated spikes.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
   };
   root.innerHTML = `
@@ -91,6 +95,13 @@ function renderShell() {
           <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
           <label ${tip(tips.gradientRejectPercent)}>Gradient exclusion % <input id="gradientRejectPercent" type="number" step="1" min="0" max="30" value="5" ${tip(tips.gradientRejectPercent)} /></label>
           <label ${tip(tips.trimPercent)}>Trim plateau % <input id="trimPercent" type="number" step="0.5" min="0" max="10" value="2.5" ${tip(tips.trimPercent)} /></label>
+          <label ${tip(tips.segmentationMode)}>Segmentation
+            <select id="segmentationMode" ${tip(tips.segmentationMode)}>
+              <option value="spatial" selected>Spatial low-pass areas</option>
+              <option value="height">Per-pixel height</option>
+            </select>
+          </label>
+          <label ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
           <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
@@ -108,7 +119,7 @@ function renderShell() {
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
-  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "gradientRejectPercent", "trimPercent", "workerCount"]) {
+  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "gradientRejectPercent", "trimPercent", "segmentationMode", "smoothRadiusPx", "workerCount"]) {
     document.getElementById(id).onchange = readOptions;
   }
 }
@@ -122,6 +133,8 @@ function readOptions() {
     edgeRadiusPx: Number(document.getElementById("edgeRadiusPx").value),
     gradientRejectPercent: Number(document.getElementById("gradientRejectPercent").value),
     trimPercent: Number(document.getElementById("trimPercent").value),
+    segmentationMode: document.getElementById("segmentationMode").value,
+    smoothRadiusPx: Number(document.getElementById("smoothRadiusPx").value),
     workerCount: Math.max(1, Math.min(12, Number(document.getElementById("workerCount").value) || 1)),
     maxSamples: 700000,
   };
@@ -727,6 +740,21 @@ function fmt(value, digits = 3) {
   return Number.isFinite(value) ? value.toFixed(digits) : "";
 }
 
+function colorScale(heatmap) {
+  const lo = fmt(heatmap.low);
+  const hi = fmt(heatmap.high);
+  return `
+    <div class="colorScale" aria-label="Height color scale relative to land mean">
+      <div class="colorBar"></div>
+      <div class="scaleTicks">
+        <span>${lo} um</span>
+        <span>0 um land mean</span>
+        <span>${hi} um</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderResults() {
   const content = document.getElementById("content");
   if (!results.length) {
@@ -741,12 +769,16 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - core edge ${r.edgeRadiusPx}px - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
+          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - core edge ${r.edgeRadiusPx}px - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <span>${fmt(r.heightDifference)} um step</span>
       </header>
       <div class="visuals">
-        <figure><img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" /><figcaption>Detrended height map - cyan basin-core contour, white land-core contour - 1-99% scale ${fmt(r.heatmap.low)} to ${fmt(r.heatmap.high)} um</figcaption></figure>
+        <figure>
+          <img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" />
+          ${colorScale(r.heatmap)}
+          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin-core contour, white land-core contour</figcaption>
+        </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
@@ -786,8 +818,8 @@ function csvEscape(value) {
 }
 
 function exportCsv(rows) {
-  const headers = ["file", "date", "width", "height", "level_mode", "edge_radius_px", "gradient_reject_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "height_difference_um", "cluster_centers_um", "objective"];
-  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.edgeRadiusPx, r.gradientRejectPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
+  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "edge_radius_px", "gradient_reject_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "height_difference_um", "cluster_centers_um", "objective"];
+  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.edgeRadiusPx, r.gradientRejectPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");

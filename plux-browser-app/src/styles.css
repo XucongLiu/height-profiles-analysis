@@ -278,6 +278,35 @@ figure img {
   height: auto;
 }
 
+.colorScale {
+  padding: 8px 10px 4px;
+  border-top: 1px solid #e1e7ef;
+}
+
+.colorBar {
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(23, 32, 42, 0.18);
+  background: linear-gradient(90deg, rgb(68, 1, 84), rgb(59, 82, 139), rgb(33, 145, 140), rgb(94, 201, 98), rgb(253, 231, 37), rgb(244, 109, 67), rgb(165, 0, 38));
+}
+
+.scaleTicks {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+  color: #536174;
+  font-size: 12px;
+}
+
+.scaleTicks span:nth-child(2) {
+  text-align: center;
+}
+
+.scaleTicks span:nth-child(3) {
+  text-align: right;
+}
+
 figcaption {
   padding: 9px 10px;
   color: #536174;
