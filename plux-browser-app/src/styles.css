@@ -256,6 +256,30 @@ p {
   white-space: nowrap;
 }
 
+.resultActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.resultActions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #536174;
+  font-size: 13px;
+}
+
+.resultActions input {
+  width: 68px;
+  height: 34px;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
 .visuals {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

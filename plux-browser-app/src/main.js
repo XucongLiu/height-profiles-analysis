@@ -20,6 +20,7 @@ let options = {
   segmentationMode: "spatial",
   smoothRadiusPx: 12,
   minRegionPercent: 1,
+  fftDenoiseStrength: 35,
   workerCount: 9,
   maxSamples: 700000,
 };
@@ -51,6 +52,7 @@ function renderShell() {
     segmentationMode: "Spatial areas classifies a smoothed height map to find continuous land/basin regions, then measures all finite original detrended points inside those regions.",
     smoothRadiusPx: "Radius of the low-pass smoothing used for spatial area detection. Larger values ignore more local roughness and isolated spikes.",
     minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed into neighboring large regions.",
+    fftDenoiseStrength: "FFT low-pass strength used only for segmentation labels. Roughness statistics use the reconstructed, detrended height values, not the denoised values.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
   };
   root.innerHTML = `
@@ -99,6 +101,7 @@ function renderShell() {
           </label>
           <label ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
           <label ${tip(tips.minRegionPercent)}>Minimum region % <input id="minRegionPercent" type="number" step="0.1" min="0" max="20" value="1" ${tip(tips.minRegionPercent)} /></label>
+          <label ${tip(tips.fftDenoiseStrength)}>FFT denoise % <input id="fftDenoiseStrength" type="number" step="1" min="0" max="100" value="35" ${tip(tips.fftDenoiseStrength)} /></label>
           <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
@@ -116,7 +119,7 @@ function renderShell() {
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
-  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "minRegionPercent", "workerCount"]) {
+  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "minRegionPercent", "fftDenoiseStrength", "workerCount"]) {
     document.getElementById(id).onchange = readOptions;
   }
 }
@@ -131,6 +134,7 @@ function readOptions() {
     segmentationMode: document.getElementById("segmentationMode").value,
     smoothRadiusPx: Number(document.getElementById("smoothRadiusPx").value),
     minRegionPercent: Number(document.getElementById("minRegionPercent").value),
+    fftDenoiseStrength: Number(document.getElementById("fftDenoiseStrength").value),
     workerCount: Math.max(1, Math.min(12, Number(document.getElementById("workerCount").value) || 1)),
     maxSamples: 700000,
   };
@@ -664,6 +668,15 @@ function runWorkerJob(worker, item, jobOptions, id) {
   });
 }
 
+async function analyzeSingleItem(item, jobOptions) {
+  const worker = new Worker("./src/plux-worker.js");
+  try {
+    return await runWorkerJob(worker, item, jobOptions, `single-${Date.now()}`);
+  } finally {
+    worker.terminate();
+  }
+}
+
 async function analyzeWithWorkers(items, jobOptions) {
   if (!("Worker" in window)) {
     throw new Error("This browser does not support Web Workers.");
@@ -680,6 +693,7 @@ async function analyzeWithWorkers(items, jobOptions) {
       const item = items[index];
       setStatus(`Processing ${done + 1}-${Math.min(done + workerTotal, items.length)}/${items.length} with ${workerTotal} CPU workers...`, true);
       const result = await runWorkerJob(worker, item, jobOptions, `${lane}-${index}`);
+      result.sourceName = item.name;
       completed[index] = result;
       done++;
       results = completed.filter(Boolean);
@@ -703,6 +717,35 @@ async function handleFiles(fileList) {
 async function rerunAnalysis() {
   if (!lastUploadFiles.length || isAnalyzing) return;
   await processFiles(lastUploadFiles);
+}
+
+async function rerunSingleResult(resultIndex) {
+  const current = results[resultIndex];
+  if (!current || isAnalyzing) return;
+  readOptions();
+  const denoiseInput = document.getElementById(`denoise-${resultIndex}`);
+  const localOptions = { ...options, fftDenoiseStrength: Number(denoiseInput?.value ?? current.fftDenoiseStrength ?? options.fftDenoiseStrength) };
+  isAnalyzing = true;
+  updateSummary();
+  setStatus(`Rerunning ${current.name.split(/[\\/]/).pop()} with FFT denoise ${localOptions.fftDenoiseStrength}%...`, true);
+  try {
+    const items = await expandUploads(lastUploadFiles);
+    const sourceName = current.sourceName || current.name;
+    const item = items.find((candidate) => candidate.name === sourceName || candidate.name === current.name);
+    if (!item) throw new Error(`Could not find the uploaded source for ${current.name}. Upload the file again, then rerun.`);
+    const updated = await analyzeSingleItem(item, localOptions);
+    updated.sourceName = item.name;
+    releaseResultUrls([results[resultIndex]]);
+    results[resultIndex] = updated;
+    renderResults();
+    setStatus(`Reran ${updated.name.split(/[\\/]/).pop()}.`);
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "Failed to rerun this map.");
+  } finally {
+    isAnalyzing = false;
+    updateSummary();
+  }
 }
 
 async function processFiles(files) {
@@ -765,9 +808,13 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
+          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
-        <span>${fmt(r.heightDifference)} um step</span>
+        <div class="resultActions">
+          <span>${fmt(r.heightDifference)} um step</span>
+          <label>FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
+          <button data-rerun="${idx}">Rerun Map</button>
+        </div>
       </header>
       <div class="visuals">
         <figure>
@@ -801,6 +848,9 @@ function renderResults() {
       </table>
     </article>
   `).join("");
+  for (const button of content.querySelectorAll("[data-rerun]")) {
+    button.onclick = () => rerunSingleResult(Number(button.dataset.rerun));
+  }
   updateSummary();
 }
 
@@ -814,8 +864,8 @@ function csvEscape(value) {
 }
 
 function exportCsv(rows) {
-  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "min_region_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
-  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.minRegionPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
+  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "min_region_percent", "fft_denoise_percent", "interpolated_points", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
+  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
