@@ -11,6 +11,7 @@ const PALETTE = [
 let results = [];
 let lastUploadFiles = [];
 let isAnalyzing = false;
+let mapStatuses = {};
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -726,8 +727,12 @@ async function rerunSingleResult(resultIndex) {
   const denoiseInput = document.getElementById(`denoise-${resultIndex}`);
   const localOptions = { ...options, fftDenoiseStrength: Number(denoiseInput?.value ?? current.fftDenoiseStrength ?? options.fftDenoiseStrength) };
   isAnalyzing = true;
+  mapStatuses[resultIndex] = {
+    busy: true,
+    text: `Rerunning ${current.name.split(/[\\/]/).pop()} with FFT denoise ${localOptions.fftDenoiseStrength}%...`,
+  };
+  renderResults();
   updateSummary();
-  setStatus(`Rerunning ${current.name.split(/[\\/]/).pop()} with FFT denoise ${localOptions.fftDenoiseStrength}%...`, true);
   try {
     const items = await expandUploads(lastUploadFiles);
     const sourceName = current.sourceName || current.name;
@@ -737,11 +742,19 @@ async function rerunSingleResult(resultIndex) {
     updated.sourceName = item.name;
     releaseResultUrls([results[resultIndex]]);
     results[resultIndex] = updated;
+    mapStatuses[resultIndex] = {
+      busy: false,
+      text: `Updated with FFT denoise ${localOptions.fftDenoiseStrength}%.`,
+    };
     renderResults();
-    setStatus(`Reran ${updated.name.split(/[\\/]/).pop()}.`);
   } catch (error) {
     console.error(error);
-    setStatus(error.message || "Failed to rerun this map.");
+    mapStatuses[resultIndex] = {
+      busy: false,
+      error: true,
+      text: error.message || "Failed to rerun this map.",
+    };
+    renderResults();
   } finally {
     isAnalyzing = false;
     updateSummary();
@@ -756,6 +769,7 @@ async function processFiles(files) {
   updateSummary();
   releaseResultUrls(results);
   results = [];
+  mapStatuses = {};
   renderResults();
   try {
     const items = await expandUploads(files);
@@ -813,7 +827,8 @@ function renderResults() {
         <div class="resultActions">
           <span>${fmt(r.heightDifference)} um step</span>
           <label>FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
-          <button data-rerun="${idx}">Rerun Map</button>
+          <button data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>Rerun Map</button>
+          ${mapStatusMarkup(idx)}
         </div>
       </header>
       <div class="visuals">
@@ -825,7 +840,7 @@ function renderResults() {
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>Cluster mask and measurement regions</span>
+            <span>Cluster mask and measurement regions - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}%</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin core, measured</span>
               <span><i class="swatch basinAssigned"></i>Small/edge basin pixels outside measured region</span>
@@ -852,6 +867,13 @@ function renderResults() {
     button.onclick = () => rerunSingleResult(Number(button.dataset.rerun));
   }
   updateSummary();
+}
+
+function mapStatusMarkup(idx) {
+  const state = mapStatuses[idx];
+  if (!state?.text) return "";
+  const cls = state.error ? "mapStatus error" : state.busy ? "mapStatus busy" : "mapStatus done";
+  return `<span class="${cls}">${state.busy ? '<i class="miniSpinner"></i>' : ""}${escapeHtml(state.text)}</span>`;
 }
 
 function escapeHtml(text) {
