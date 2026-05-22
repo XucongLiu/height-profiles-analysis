@@ -23,7 +23,7 @@ http://127.0.0.1:4173
 - Fit and remove a best-fit plane from each height map. By default, the plane is fitted from the higher-land plateau only.
 - Render a detrended rainbow height map with the higher-land mean height set to `0 um`.
 - Cluster height values into plateau populations.
-- Default segmentation uses a spatial low-pass area map, so isolated roughness spikes inside a continuous basin or land area do not become separate excluded dots.
+- Default segmentation uses a spatial low-pass area map and connected-region cleanup, so isolated roughness spikes or tiny islands inside a continuous basin or land area are absorbed into the surrounding large region.
 - Build plateau-core masks by excluding pixels near land/basin borders, high-gradient transition pixels, and height-tail outliers.
 - Draw contours around the exact basin-core and land-core regions used for statistics.
 - Report mean height, `Sa`, `Sq`, `Sz`, points, and high-low step height.
@@ -39,10 +39,9 @@ All processing runs client-side in the browser. Heavy PLUX analysis is executed 
 ## Plateau Core Controls
 
 - `Edge exclusion px`: in `Per-pixel height` mode, erodes each plateau mask inward before measuring roughness. In `Spatial low-pass areas` mode, the full detected area is measured.
-- `Gradient exclusion %`: in `Per-pixel height` mode, removes the highest-gradient pixels inside each core mask. In `Spatial low-pass areas` mode, finite points inside the detected area are kept.
-- `Trim plateau %`: in `Per-pixel height` mode, removes the highest and lowest height tails that remain inside each core mask. In `Spatial low-pass areas` mode, finite extreme points inside the detected area are kept.
 - `Segmentation`: `Spatial low-pass areas` classifies a smoothed map to detect continuous land/basin regions, then measures all finite original detrended heights inside those regions. `Per-pixel height` keeps the older direct height clustering behavior.
 - `Area smoothing px`: radius of the spatial low-pass filter used to detect large continuous areas. Increase it when roughness speckles are being misclassified as another region.
+- `Minimum region %`: removes/absorbs connected regions smaller than this percent of the whole map. Default is `1%`, so tiny islands are not treated as separate land/basin polygons.
 - `CPU workers`: number of browser worker threads used for PLUX analysis. The default is conservative for an 8-core / 16-thread CPU: enough parallelism for batches, but not all logical threads.
 
 Contour colors:

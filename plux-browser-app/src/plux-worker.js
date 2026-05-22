@@ -337,6 +337,87 @@ function countMask(mask) {
   return count;
 }
 
+function componentSummary(mask, width, height, minPixels = 1) {
+  const seen = new Uint8Array(mask.length);
+  const components = [];
+  const queue = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    let area = 0;
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      area++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= mask.length || seen[n] || !mask[n]) continue;
+        const nx = n % width;
+        const ny = Math.floor(n / width);
+        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (area >= minPixels) components.push({ areaPx: area, areaPercent: (area / mask.length) * 100, minX, maxX, minY, maxY });
+  }
+  components.sort((a, b) => b.areaPx - a.areaPx);
+  return components;
+}
+
+function cleanSmallLabelComponents(labels, width, height, minPixels) {
+  if (minPixels <= 1) return labels;
+  const seen = new Uint8Array(labels.length);
+  const queue = [];
+  const boundaryCounts = new Map();
+  for (let start = 0; start < labels.length; start++) {
+    const label = labels[start];
+    if (label < 0 || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    boundaryCounts.clear();
+    let head = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= labels.length) continue;
+        const nx = n % width;
+        if (Math.abs(nx - x) > 1) continue;
+        const nl = labels[n];
+        if (nl === label && !seen[n]) {
+          seen[n] = 1;
+          queue.push(n);
+        } else if (nl >= 0 && nl !== label) {
+          boundaryCounts.set(nl, (boundaryCounts.get(nl) || 0) + 1);
+        }
+      }
+    }
+    if (queue.length >= minPixels || !boundaryCounts.size) continue;
+    let replacement = label;
+    let bestCount = -1;
+    for (const [candidate, count] of boundaryCounts.entries()) {
+      if (count > bestCount) {
+        replacement = candidate;
+        bestCount = count;
+      }
+    }
+    for (const idx of queue) labels[idx] = replacement;
+  }
+  return labels;
+}
+
 function clusterPlateaus(values, width, height) {
   const spatialMode = options.segmentationMode !== "height";
   const segmentationValues = spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values;
@@ -360,6 +441,11 @@ function clusterPlateaus(values, width, height) {
     labels[i] = best;
     counts[best]++;
   }
+  if (spatialMode) {
+    cleanSmallLabelComponents(labels, width, height, Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100));
+    counts.fill(0);
+    for (let i = 0; i < labels.length; i++) if (labels[i] >= 0) counts[labels[i]]++;
+  }
   const plateau = counts.map((count, label) => ({ count, label })).sort((a, b) => b.count - a.count).slice(0, 2).map((x) => x.label).sort((a, b) => centers[a] - centers[b]);
   const lowAssigned = new Uint8Array(values.length);
   const highAssigned = new Uint8Array(values.length);
@@ -376,16 +462,30 @@ function clusterPlateaus(values, width, height) {
       lowCore = lowAssigned;
       highCore = highAssigned;
     }
-    lowCore = gradientFilteredMask(values, lowCore, width, height, options.gradientRejectPercent);
-    highCore = gradientFilteredMask(values, highCore, width, height, options.gradientRejectPercent);
-    lowCore = trimExistingMask(values, lowCore, options.trimPercent);
-    highCore = trimExistingMask(values, highCore, options.trimPercent);
+    lowCore = gradientFilteredMask(values, lowCore, width, height, options.gradientRejectPercent || 0);
+    highCore = gradientFilteredMask(values, highCore, width, height, options.gradientRejectPercent || 0);
+    lowCore = trimExistingMask(values, lowCore, options.trimPercent || 0);
+    highCore = trimExistingMask(values, highCore, options.trimPercent || 0);
     if (countMask(lowCore) < 100 || countMask(highCore) < 100) {
-      lowCore = trimMask(values, labels, plateau[0], options.trimPercent);
-      highCore = trimMask(values, labels, plateau[1], options.trimPercent);
+      lowCore = trimMask(values, labels, plateau[0], options.trimPercent || 0);
+      highCore = trimMask(values, labels, plateau[1], options.trimPercent || 0);
     }
   }
-  return { width, height, labels, centers, counts, lowLabel: plateau[0], highLabel: plateau[1], lowMask: lowCore, highMask: highCore, segmentationMode: spatialMode ? "spatial" : "height" };
+  const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
+  return {
+    width,
+    height,
+    labels,
+    centers,
+    counts,
+    lowLabel: plateau[0],
+    highLabel: plateau[1],
+    lowMask: lowCore,
+    highMask: highCore,
+    lowComponents: componentSummary(lowCore, width, height, spatialMode ? minPixels : 1),
+    highComponents: componentSummary(highCore, width, height, spatialMode ? minPixels : 1),
+    segmentationMode: spatialMode ? "spatial" : "height"
+  };
 }
 
 function statsForMask(values, mask) {
@@ -501,6 +601,10 @@ async function analyze(measurement) {
   const cluster = clusterPlateaus(values, measurement.width, measurement.height);
   const low = statsForMask(values, cluster.lowMask);
   const high = statsForMask(values, cluster.highMask);
+  const lowAreaPx = countMask(cluster.lowMask);
+  const highAreaPx = countMask(cluster.highMask);
+  const totalPixels = measurement.width * measurement.height;
+  const fovArea = Number.isFinite(measurement.fovX) && Number.isFinite(measurement.fovY) ? measurement.fovX * measurement.fovY : NaN;
   const heatmap = await renderHeatmap(values, measurement.width, measurement.height, cluster, high.mean);
   const maskBlob = await renderClusterMask(cluster, measurement.width, measurement.height);
   const measuredFraction = finiteFraction(values);
@@ -514,11 +618,13 @@ async function analyze(measurement) {
     objective: measurement.objective,
     levelMode: options.detrend ? options.levelMode : "none",
     edgeRadiusPx: options.edgeRadiusPx,
-    gradientRejectPercent: options.gradientRejectPercent,
     segmentationMode: cluster.segmentationMode,
     smoothRadiusPx: options.smoothRadiusPx,
+    minRegionPercent: options.minRegionPercent || 0,
     low,
     high,
+    lowArea: { pixels: lowAreaPx, percent: (lowAreaPx / totalPixels) * 100, fovUnits2: Number.isFinite(fovArea) ? fovArea * lowAreaPx / totalPixels : NaN, components: cluster.lowComponents },
+    highArea: { pixels: highAreaPx, percent: (highAreaPx / totalPixels) * 100, fovUnits2: Number.isFinite(fovArea) ? fovArea * highAreaPx / totalPixels : NaN, components: cluster.highComponents },
     heatmap,
     maskBlob,
     clusterCenters: cluster.centers,

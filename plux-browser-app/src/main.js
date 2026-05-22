@@ -16,12 +16,11 @@ let options = {
   levelMode: "higher-land",
   clusters: 3,
   clipPercent: 1,
-  trimPercent: 2.5,
   edgeRadiusPx: 5,
-  gradientRejectPercent: 5,
   segmentationMode: "spatial",
   smoothRadiusPx: 12,
-  workerCount: Math.min(6, Math.max(2, Math.floor((navigator.hardwareConcurrency || 8) / 2))),
+  minRegionPercent: 1,
+  workerCount: 9,
   maxSamples: 700000,
 };
 
@@ -49,10 +48,9 @@ function renderShell() {
     clusters: "Number of height groups for k-means clustering. Use 3 when land, basin, and transition/rim populations are visible.",
     clipPercent: "Clip the highest and lowest height tails before clustering so extreme spikes do not pull the cluster centers.",
     edgeRadiusPx: "For per-pixel height segmentation, shrink each plateau mask inward by this many pixels before measuring roughness. Spatial area mode measures the full detected area.",
-    gradientRejectPercent: "For per-pixel height segmentation, exclude the highest-gradient pixels inside each plateau mask. Spatial area mode keeps finite points inside the detected area.",
-    trimPercent: "For per-pixel height segmentation, remove this percent from both height tails inside each plateau. Spatial area mode keeps finite extreme points inside the detected area.",
     segmentationMode: "Spatial areas classifies a smoothed height map to find continuous land/basin regions, then measures all finite original detrended points inside those regions.",
     smoothRadiusPx: "Radius of the low-pass smoothing used for spatial area detection. Larger values ignore more local roughness and isolated spikes.",
+    minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed into neighboring large regions.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
   };
   root.innerHTML = `
@@ -93,8 +91,6 @@ function renderShell() {
           <label ${tip(tips.clusters)}>Clusters <input id="clusters" type="number" min="2" max="5" value="3" ${tip(tips.clusters)} /></label>
           <label ${tip(tips.clipPercent)}>Clip tails % <input id="clipPercent" type="number" step="0.5" min="0" max="10" value="1" ${tip(tips.clipPercent)} /></label>
           <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
-          <label ${tip(tips.gradientRejectPercent)}>Gradient exclusion % <input id="gradientRejectPercent" type="number" step="1" min="0" max="30" value="5" ${tip(tips.gradientRejectPercent)} /></label>
-          <label ${tip(tips.trimPercent)}>Trim plateau % <input id="trimPercent" type="number" step="0.5" min="0" max="10" value="2.5" ${tip(tips.trimPercent)} /></label>
           <label ${tip(tips.segmentationMode)}>Segmentation
             <select id="segmentationMode" ${tip(tips.segmentationMode)}>
               <option value="spatial" selected>Spatial low-pass areas</option>
@@ -102,6 +98,7 @@ function renderShell() {
             </select>
           </label>
           <label ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
+          <label ${tip(tips.minRegionPercent)}>Minimum region % <input id="minRegionPercent" type="number" step="0.1" min="0" max="20" value="1" ${tip(tips.minRegionPercent)} /></label>
           <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
@@ -119,7 +116,7 @@ function renderShell() {
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
-  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "gradientRejectPercent", "trimPercent", "segmentationMode", "smoothRadiusPx", "workerCount"]) {
+  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "minRegionPercent", "workerCount"]) {
     document.getElementById(id).onchange = readOptions;
   }
 }
@@ -131,10 +128,9 @@ function readOptions() {
     clusters: Number(document.getElementById("clusters").value),
     clipPercent: Number(document.getElementById("clipPercent").value),
     edgeRadiusPx: Number(document.getElementById("edgeRadiusPx").value),
-    gradientRejectPercent: Number(document.getElementById("gradientRejectPercent").value),
-    trimPercent: Number(document.getElementById("trimPercent").value),
     segmentationMode: document.getElementById("segmentationMode").value,
     smoothRadiusPx: Number(document.getElementById("smoothRadiusPx").value),
+    minRegionPercent: Number(document.getElementById("minRegionPercent").value),
     workerCount: Math.max(1, Math.min(12, Number(document.getElementById("workerCount").value) || 1)),
     maxSamples: 700000,
   };
@@ -769,7 +765,7 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - core edge ${r.edgeRadiusPx}px - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
+          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <span>${fmt(r.heightDifference)} um step</span>
       </header>
@@ -785,22 +781,22 @@ function renderResults() {
             <span>Cluster mask and measurement regions</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin core, measured</span>
-              <span><i class="swatch basinAssigned"></i>Basin assigned, excluded</span>
+              <span><i class="swatch basinAssigned"></i>Small/edge basin pixels outside measured region</span>
               <span><i class="swatch landCore"></i>Land core, measured</span>
-              <span><i class="swatch landAssigned"></i>Land assigned, excluded</span>
+              <span><i class="swatch landAssigned"></i>Small/edge land pixels outside measured region</span>
               <span><i class="swatch excluded"></i>Transition or other cluster</span>
               <span><i class="swatch invalid"></i>Invalid or unmeasured</span>
-              <span><i class="swatch basinContour"></i>Cyan basin contour</span>
-              <span><i class="swatch landContour"></i>White land contour</span>
+              <span><i class="swatch basinContour"></i>Cyan basin region outline</span>
+              <span><i class="swatch landContour"></i>White land region outline</span>
             </span>
           </figcaption>
         </figure>
       </div>
       <table>
-        <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th></tr></thead>
+        <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th><th>Area px</th><th>Polygons</th></tr></thead>
         <tbody>
-          <tr><td>Lower basin</td><td>${fmt(r.low.mean)}</td><td>${fmt(r.low.Sa)}</td><td>${fmt(r.low.Sq)}</td><td>${fmt(r.low.Sz)}</td><td>${r.low.points.toLocaleString()}</td></tr>
-          <tr><td>Higher land</td><td>${fmt(r.high.mean)}</td><td>${fmt(r.high.Sa)}</td><td>${fmt(r.high.Sq)}</td><td>${fmt(r.high.Sz)}</td><td>${r.high.points.toLocaleString()}</td></tr>
+          <tr><td>Lower basin</td><td>${fmt(r.low.mean)}</td><td>${fmt(r.low.Sa)}</td><td>${fmt(r.low.Sq)}</td><td>${fmt(r.low.Sz)}</td><td>${r.low.points.toLocaleString()}</td><td>${fmt(r.lowArea?.percent)}</td><td>${(r.lowArea?.pixels || 0).toLocaleString()}</td><td>${(r.lowArea?.components?.length || 0).toLocaleString()}</td></tr>
+          <tr><td>Higher land</td><td>${fmt(r.high.mean)}</td><td>${fmt(r.high.Sa)}</td><td>${fmt(r.high.Sq)}</td><td>${fmt(r.high.Sz)}</td><td>${r.high.points.toLocaleString()}</td><td>${fmt(r.highArea?.percent)}</td><td>${(r.highArea?.pixels || 0).toLocaleString()}</td><td>${(r.highArea?.components?.length || 0).toLocaleString()}</td></tr>
         </tbody>
       </table>
     </article>
@@ -818,8 +814,8 @@ function csvEscape(value) {
 }
 
 function exportCsv(rows) {
-  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "edge_radius_px", "gradient_reject_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "height_difference_um", "cluster_centers_um", "objective"];
-  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.edgeRadiusPx, r.gradientRejectPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
+  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "min_region_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
+  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.minRegionPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
