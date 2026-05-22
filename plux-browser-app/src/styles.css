@@ -288,6 +288,41 @@ p {
   padding: 0 8px;
 }
 
+.rerunMapButton {
+  color: #ffffff;
+  border-color: transparent;
+  min-width: 104px;
+  justify-content: center;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.rerunMapButton.ready {
+  background: #2563eb;
+}
+
+.rerunMapButton.ready:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.rerunMapButton.running,
+.rerunMapButton.running:disabled {
+  background: #e78921;
+  color: #ffffff;
+  opacity: 1;
+}
+
+.rerunMapButton.done {
+  background: #12803a;
+}
+
+.rerunMapButton.done:hover:not(:disabled) {
+  background: #0d6b2c;
+}
+
+.rerunMapButton.error {
+  background: #a73535;
+}
+
 .mapStatus {
   display: flex;
   align-items: center;

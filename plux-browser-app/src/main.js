@@ -828,7 +828,7 @@ function renderResults() {
           <div class="runControls">
             <span class="stepValue">${fmt(r.heightDifference)} um step</span>
             <label title="FFT low-pass denoise strength used for segmentation only. Higher values remove more high-frequency content before clustering.">FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
-            <button data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>Rerun Map</button>
+            <button class="${rerunButtonClass(idx)}" data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>${mapStatuses[idx]?.busy ? "Running..." : "Rerun Map"}</button>
           </div>
           ${mapStatusMarkup(idx)}
         </div>
@@ -876,6 +876,14 @@ function mapStatusMarkup(idx) {
   const text = state?.text || "Ready";
   const cls = state?.error ? "mapStatus error" : state?.busy ? "mapStatus busy" : state?.text ? "mapStatus done" : "mapStatus idle";
   return `<div class="${cls}">${state?.busy ? '<i class="miniSpinner"></i>' : '<i class="miniDot"></i>'}${escapeHtml(text)}</div>`;
+}
+
+function rerunButtonClass(idx) {
+  const state = mapStatuses[idx];
+  if (state?.error) return "rerunMapButton error";
+  if (state?.busy) return "rerunMapButton running";
+  if (state?.text) return "rerunMapButton done";
+  return "rerunMapButton ready";
 }
 
 function escapeHtml(text) {
