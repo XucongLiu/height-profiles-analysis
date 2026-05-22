@@ -50,9 +50,9 @@ function renderShell() {
     clusters: "Number of height groups for k-means clustering. Use 3 when land, basin, and transition/rim populations are visible.",
     clipPercent: "Clip the highest and lowest height tails before clustering so extreme spikes do not pull the cluster centers.",
     edgeRadiusPx: "For per-pixel height segmentation, shrink each plateau mask inward by this many pixels before measuring roughness. Spatial area mode measures the full detected area.",
-    segmentationMode: "Spatial areas classifies a smoothed height map to find continuous land/basin regions, then measures all finite original detrended points inside those regions.",
-    smoothRadiusPx: "Radius of the low-pass smoothing used for spatial area detection. Larger values ignore more local roughness and isolated spikes.",
-    minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed into neighboring large regions.",
+    segmentationMode: "CCA geometry first classifies the FFT-denoised map, groups connected pixels into regions, removes tiny islands, fills small enclosed holes, and smooths borders before measuring the original detrended heights.",
+    smoothRadiusPx: "Boundary smoothing strength for CCA geometry mode. Larger values make region edges straighter/smoother and less sensitive to local roughness.",
+    minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed or ignored, and small enclosed holes are filled.",
     fftDenoiseStrength: "FFT low-pass strength used only for segmentation labels. Roughness statistics use the reconstructed, detrended height values, not the denoised values.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
   };
@@ -96,7 +96,7 @@ function renderShell() {
           <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
           <label ${tip(tips.segmentationMode)}>Segmentation
             <select id="segmentationMode" ${tip(tips.segmentationMode)}>
-              <option value="spatial" selected>Spatial low-pass areas</option>
+              <option value="spatial" selected>CCA geometric regions</option>
               <option value="height">Per-pixel height</option>
             </select>
           </label>
@@ -822,7 +822,7 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
+          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <div class="resultActions">
           <div class="runControls">
@@ -837,17 +837,17 @@ function renderResults() {
         <figure>
           <img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" />
           ${colorScale(r.heatmap)}
-          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin-core contour, white land-core contour</figcaption>
+          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>Cluster mask and measurement regions - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}%</span>
+            <span>CCA-cleaned cluster mask and measurement regions - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}%</span>
             <span class="legend">
-              <span><i class="swatch basinCore"></i>Basin core, measured</span>
-              <span><i class="swatch basinAssigned"></i>Small/edge basin pixels outside measured region</span>
-              <span><i class="swatch landCore"></i>Land core, measured</span>
-              <span><i class="swatch landAssigned"></i>Small/edge land pixels outside measured region</span>
+              <span><i class="swatch basinCore"></i>Basin region, measured</span>
+              <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
+              <span><i class="swatch landCore"></i>Land region, measured</span>
+              <span><i class="swatch landAssigned"></i>Initial land pixels cleaned out</span>
               <span><i class="swatch excluded"></i>Transition or other cluster</span>
               <span><i class="swatch invalid"></i>Invalid or unmeasured</span>
               <span><i class="swatch basinContour"></i>Cyan basin region outline</span>

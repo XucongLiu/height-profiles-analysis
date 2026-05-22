@@ -611,6 +611,128 @@ function cleanSmallLabelComponents(labels, width, height, minPixels) {
   return labels;
 }
 
+function majoritySmoothLabels(labels, width, height, iterations) {
+  if (iterations <= 0) return labels;
+  let current = labels;
+  let next = new Int8Array(labels.length);
+  const counts = new Int32Array(Math.max(8, options.clusters + 2));
+  for (let iter = 0; iter < iterations; iter++) {
+    next.set(current);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = y * width + x;
+        const label = current[idx];
+        if (label < 0) continue;
+        counts.fill(0);
+        for (let dy = -1; dy <= 1; dy++) {
+          const row = idx + dy * width;
+          for (let dx = -1; dx <= 1; dx++) {
+            const neighborLabel = current[row + dx];
+            if (neighborLabel >= 0) counts[neighborLabel]++;
+          }
+        }
+        let best = label;
+        let bestCount = counts[label];
+        for (let k = 0; k < counts.length; k++) {
+          if (counts[k] > bestCount) {
+            best = k;
+            bestCount = counts[k];
+          }
+        }
+        if (best !== label && bestCount >= 5) next[idx] = best;
+      }
+    }
+    const swap = current;
+    current = next;
+    next = swap;
+  }
+  if (current !== labels) labels.set(current);
+  return labels;
+}
+
+function fillSmallEnclosedHoles(mask, width, height, maxHolePixels) {
+  if (maxHolePixels <= 0) return mask;
+  const seen = new Uint8Array(mask.length);
+  const queue = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (mask[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    let touchesBorder = false;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesBorder = true;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= mask.length || seen[n] || mask[n]) continue;
+        const nx = n % width;
+        const ny = Math.floor(n / width);
+        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (!touchesBorder && queue.length <= maxHolePixels) {
+      for (const idx of queue) mask[idx] = 1;
+    }
+  }
+  return mask;
+}
+
+function maskFromLargeComponents(source, width, height, minPixels) {
+  if (minPixels <= 1) return source;
+  const seen = new Uint8Array(source.length);
+  const out = new Uint8Array(source.length);
+  const queue = [];
+  for (let start = 0; start < source.length; start++) {
+    if (!source[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= source.length || seen[n] || !source[n]) continue;
+        const nx = n % width;
+        if (Math.abs(nx - x) > 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (queue.length >= minPixels) {
+      for (const idx of queue) out[idx] = 1;
+    }
+  }
+  return out;
+}
+
+function labelsFromCleanPlateaus(labels, lowMask, highMask, lowLabel, highLabel) {
+  for (let i = 0; i < labels.length; i++) {
+    if (lowMask[i]) labels[i] = lowLabel;
+    else if (highMask[i]) labels[i] = highLabel;
+  }
+}
+
+function resolveMaskOverlaps(lowMask, highMask, segmentationValues, lowCenter, highCenter) {
+  for (let i = 0; i < lowMask.length; i++) {
+    if (!lowMask[i] || !highMask[i]) continue;
+    const v = segmentationValues[i];
+    if (!Number.isFinite(v)) {
+      highMask[i] = 0;
+      continue;
+    }
+    if (Math.abs(v - lowCenter) <= Math.abs(v - highCenter)) highMask[i] = 0;
+    else lowMask[i] = 0;
+  }
+}
+
 function clusterPlateaus(values, width, height, segmentationOverride = null) {
   const spatialMode = options.segmentationMode !== "height";
   const segmentationValues = segmentationOverride || (spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values);
@@ -635,7 +757,11 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     counts[best]++;
   }
   if (spatialMode) {
-    cleanSmallLabelComponents(labels, width, height, Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100));
+    const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
+    const smoothIterations = Math.max(0, Math.min(32, Math.round(options.smoothRadiusPx || 0)));
+    cleanSmallLabelComponents(labels, width, height, minPixels);
+    majoritySmoothLabels(labels, width, height, smoothIterations);
+    cleanSmallLabelComponents(labels, width, height, minPixels);
     counts.fill(0);
     for (let i = 0; i < labels.length; i++) if (labels[i] >= 0) counts[labels[i]]++;
   }
@@ -663,6 +789,14 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
       lowCore = trimMask(values, labels, plateau[0], options.trimPercent || 0);
       highCore = trimMask(values, labels, plateau[1], options.trimPercent || 0);
     }
+  } else {
+    const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
+    lowCore = maskFromLargeComponents(lowAssigned, width, height, minPixels);
+    highCore = maskFromLargeComponents(highAssigned, width, height, minPixels);
+    fillSmallEnclosedHoles(lowCore, width, height, minPixels);
+    fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    resolveMaskOverlaps(lowCore, highCore, segmentationValues, centers[plateau[0]], centers[plateau[1]]);
+    labelsFromCleanPlateaus(labels, lowCore, highCore, plateau[0], plateau[1]);
   }
   const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
   return {
@@ -677,7 +811,7 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     highMask: highCore,
     lowComponents: componentSummary(lowCore, width, height, spatialMode ? minPixels : 1),
     highComponents: componentSummary(highCore, width, height, spatialMode ? minPixels : 1),
-    segmentationMode: spatialMode ? "spatial" : "height"
+    segmentationMode: spatialMode ? "cca-geometry" : "height"
   };
 }
 
