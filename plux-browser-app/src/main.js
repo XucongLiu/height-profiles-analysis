@@ -51,7 +51,7 @@ function renderShell() {
     clipPercent: "Clip the highest and lowest height tails before clustering so extreme spikes do not pull the cluster centers.",
     edgeRadiusPx: "For per-pixel height segmentation, shrink each plateau mask inward by this many pixels before measuring roughness. Spatial area mode measures the full detected area.",
     segmentationMode: "CCA geometry first classifies the FFT-denoised map, groups connected pixels into regions, removes tiny islands, fills small enclosed holes, and smooths borders before measuring the original detrended heights.",
-    smoothRadiusPx: "Boundary smoothing strength for CCA geometry mode. Larger values make region edges straighter/smoother and less sensitive to local roughness.",
+    smoothRadiusPx: "Boundary fitting strength for CCA geometry mode. Larger values simplify the connected-region boundaries into longer straight or smooth curve segments before measuring.",
     minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed or ignored, and small enclosed holes are filled.",
     fftDenoiseStrength: "FFT low-pass strength used only for segmentation labels. Roughness statistics use the reconstructed, detrended height values, not the denoised values.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
@@ -842,7 +842,7 @@ function renderResults() {
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>CCA-cleaned cluster mask and measurement regions - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}%</span>
+            <span>CCA + vector-fitted cluster mask and measurement regions - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}%</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin region, measured</span>
               <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>

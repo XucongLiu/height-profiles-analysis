@@ -713,6 +713,133 @@ function maskFromLargeComponents(source, width, height, minPixels) {
   return out;
 }
 
+function pointSegmentDistance(point, a, b) {
+  const vx = b.y - a.y;
+  const vy = b.x - a.x;
+  const wx = point.y - a.y;
+  const wy = point.x - a.x;
+  const len2 = vx * vx + vy * vy;
+  if (len2 <= 1e-12) {
+    const dx = point.y - a.y;
+    const dy = point.x - a.x;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+  const py = a.y + t * vx;
+  const px = a.x + t * vy;
+  const dx = point.y - py;
+  const dy = point.x - px;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function simplifyCurve(points, tolerance) {
+  if (points.length <= 2 || tolerance <= 0) return points;
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [start, end] = stack.pop();
+    let maxDist = -1;
+    let maxIndex = -1;
+    for (let i = start + 1; i < end; i++) {
+      const d = pointSegmentDistance(points[i], points[start], points[end]);
+      if (d > maxDist) {
+        maxDist = d;
+        maxIndex = i;
+      }
+    }
+    if (maxDist > tolerance && maxIndex > start) {
+      keep[maxIndex] = 1;
+      stack.push([start, maxIndex], [maxIndex, end]);
+    }
+  }
+  const simplified = [];
+  for (let i = 0; i < points.length; i++) if (keep[i]) simplified.push(points[i]);
+  return simplified;
+}
+
+function interpolateCurve(points, minY, maxY) {
+  const values = new Float32Array(maxY - minY + 1);
+  if (!points.length) return values;
+  let segment = 0;
+  for (let y = minY; y <= maxY; y++) {
+    while (segment < points.length - 2 && y > points[segment + 1].y) segment++;
+    const a = points[segment];
+    const b = points[Math.min(segment + 1, points.length - 1)];
+    const t = b.y === a.y ? 0 : (y - a.y) / (b.y - a.y);
+    values[y - minY] = a.x + (b.x - a.x) * Math.max(0, Math.min(1, t));
+  }
+  return values;
+}
+
+function vectorizeMaskByRowBoundaries(source, width, height, minPixels, tolerance) {
+  if (tolerance <= 0) return source;
+  const seen = new Uint8Array(source.length);
+  const out = new Uint8Array(source.length);
+  const queue = [];
+  for (let start = 0; start < source.length; start++) {
+    if (!source[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    let minY = height, maxY = 0, minX = width, maxX = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= source.length || seen[n] || !source[n]) continue;
+        const nx = n % width;
+        if (Math.abs(nx - x) > 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (queue.length < minPixels || maxY <= minY) continue;
+    const span = maxY - minY + 1;
+    const left = new Int32Array(span);
+    const right = new Int32Array(span);
+    left.fill(width);
+    right.fill(-1);
+    for (const idx of queue) {
+      const x = idx % width;
+      const y = Math.floor(idx / width) - minY;
+      if (x < left[y]) left[y] = x;
+      if (x > right[y]) right[y] = x;
+    }
+    const leftPoints = [];
+    const rightPoints = [];
+    for (let y = 0; y < span; y++) {
+      if (right[y] < left[y]) continue;
+      leftPoints.push({ y: y + minY, x: left[y] });
+      rightPoints.push({ y: y + minY, x: right[y] });
+    }
+    if (leftPoints.length < 2 || rightPoints.length < 2) {
+      for (const idx of queue) out[idx] = 1;
+      continue;
+    }
+    const fittedLeft = interpolateCurve(simplifyCurve(leftPoints, tolerance), minY, maxY);
+    const fittedRight = interpolateCurve(simplifyCurve(rightPoints, tolerance), minY, maxY);
+    for (let y = minY; y <= maxY; y++) {
+      const row = y * width;
+      let x0 = Math.round(fittedLeft[y - minY]);
+      let x1 = Math.round(fittedRight[y - minY]);
+      if (x0 > x1) [x0, x1] = [x1, x0];
+      x0 = Math.max(0, Math.min(width - 1, x0));
+      x1 = Math.max(0, Math.min(width - 1, x1));
+      for (let x = x0; x <= x1; x++) out[row + x] = 1;
+    }
+  }
+  return out;
+}
+
 function labelsFromCleanPlateaus(labels, lowMask, highMask, lowLabel, highLabel) {
   for (let i = 0; i < labels.length; i++) {
     if (lowMask[i]) labels[i] = lowLabel;
@@ -793,6 +920,11 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
     lowCore = maskFromLargeComponents(lowAssigned, width, height, minPixels);
     highCore = maskFromLargeComponents(highAssigned, width, height, minPixels);
+    fillSmallEnclosedHoles(lowCore, width, height, minPixels);
+    fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    const vectorTolerance = Math.max(1, Math.min(80, (options.smoothRadiusPx || 0) * 0.75));
+    lowCore = vectorizeMaskByRowBoundaries(lowCore, width, height, minPixels, vectorTolerance);
+    highCore = vectorizeMaskByRowBoundaries(highCore, width, height, minPixels, vectorTolerance);
     fillSmallEnclosedHoles(lowCore, width, height, minPixels);
     fillSmallEnclosedHoles(highCore, width, height, minPixels);
     resolveMaskOverlaps(lowCore, highCore, segmentationValues, centers[plateau[0]], centers[plateau[1]]);
