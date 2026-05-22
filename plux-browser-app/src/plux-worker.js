@@ -367,13 +367,15 @@ function clusterPlateaus(values, width, height) {
     if (labels[i] === plateau[0]) lowAssigned[i] = 1;
     if (labels[i] === plateau[1]) highAssigned[i] = 1;
   }
-  let lowCore = erodeMask(lowAssigned, width, height, options.edgeRadiusPx);
-  let highCore = erodeMask(highAssigned, width, height, options.edgeRadiusPx);
-  if (countMask(lowCore) < 100 || countMask(highCore) < 100) {
-    lowCore = lowAssigned;
-    highCore = highAssigned;
-  }
+  let lowCore = lowAssigned;
+  let highCore = highAssigned;
   if (!spatialMode) {
+    lowCore = erodeMask(lowAssigned, width, height, options.edgeRadiusPx);
+    highCore = erodeMask(highAssigned, width, height, options.edgeRadiusPx);
+    if (countMask(lowCore) < 100 || countMask(highCore) < 100) {
+      lowCore = lowAssigned;
+      highCore = highAssigned;
+    }
     lowCore = gradientFilteredMask(values, lowCore, width, height, options.gradientRejectPercent);
     highCore = gradientFilteredMask(values, highCore, width, height, options.gradientRejectPercent);
     lowCore = trimExistingMask(values, lowCore, options.trimPercent);

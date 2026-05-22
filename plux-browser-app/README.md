@@ -38,10 +38,10 @@ All processing runs client-side in the browser. Heavy PLUX analysis is executed 
 
 ## Plateau Core Controls
 
-- `Edge exclusion px`: erodes each plateau mask inward by this many pixels before measuring roughness. This removes rim and boundary pixels that often inflate `Sq`.
-- `Gradient exclusion %`: removes the highest-gradient pixels inside each core mask. This rejects sidewalls, scratches, and fringe/transition artifacts.
-- `Trim plateau %`: removes the highest and lowest height tails that remain inside each core mask.
-- `Segmentation`: `Spatial low-pass areas` classifies a smoothed map to detect continuous land/basin regions, then measures original detrended heights inside those regions. `Per-pixel height` keeps the older direct height clustering behavior.
+- `Edge exclusion px`: in `Per-pixel height` mode, erodes each plateau mask inward before measuring roughness. In `Spatial low-pass areas` mode, the full detected area is measured.
+- `Gradient exclusion %`: in `Per-pixel height` mode, removes the highest-gradient pixels inside each core mask. In `Spatial low-pass areas` mode, finite points inside the detected area are kept.
+- `Trim plateau %`: in `Per-pixel height` mode, removes the highest and lowest height tails that remain inside each core mask. In `Spatial low-pass areas` mode, finite extreme points inside the detected area are kept.
+- `Segmentation`: `Spatial low-pass areas` classifies a smoothed map to detect continuous land/basin regions, then measures all finite original detrended heights inside those regions. `Per-pixel height` keeps the older direct height clustering behavior.
 - `Area smoothing px`: radius of the spatial low-pass filter used to detect large continuous areas. Increase it when roughness speckles are being misclassified as another region.
 - `CPU workers`: number of browser worker threads used for PLUX analysis. The default is conservative for an 8-core / 16-thread CPU: enough parallelism for batches, but not all logical threads.
 
