@@ -922,7 +922,8 @@ function clusterPlateaus(values, width, height, segmentationOverride = null) {
     highCore = maskFromLargeComponents(highAssigned, width, height, minPixels);
     fillSmallEnclosedHoles(lowCore, width, height, minPixels);
     fillSmallEnclosedHoles(highCore, width, height, minPixels);
-    const vectorTolerance = Math.max(1, Math.min(80, (options.smoothRadiusPx || 0) * 0.75));
+    const requestedTolerance = Number(options.boundaryEpsilonPx ?? 18);
+    const vectorTolerance = Number.isFinite(requestedTolerance) ? Math.max(0, Math.min(200, requestedTolerance)) : 18;
     lowCore = vectorizeMaskByRowBoundaries(lowCore, width, height, minPixels, vectorTolerance);
     highCore = vectorizeMaskByRowBoundaries(highCore, width, height, minPixels, vectorTolerance);
     fillSmallEnclosedHoles(lowCore, width, height, minPixels);
@@ -1081,6 +1082,7 @@ async function analyze(measurement) {
     edgeRadiusPx: options.edgeRadiusPx,
     segmentationMode: cluster.segmentationMode,
     smoothRadiusPx: options.smoothRadiusPx,
+    boundaryEpsilonPx: options.boundaryEpsilonPx ?? 18,
     minRegionPercent: options.minRegionPercent || 0,
     fftDenoiseStrength: options.fftDenoiseStrength || 0,
     interpolatedPoints: reconstruction.interpolated,
