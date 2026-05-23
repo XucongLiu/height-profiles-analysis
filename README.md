@@ -2,6 +2,18 @@
 
 Browser-based tools for reading Sensofar `.plux` interferometry height profiles, detrending maps, clustering higher-land/lower-basin plateau cores, rendering contours, and exporting roughness statistics.
 
+## Experimental Branch
+
+The branch `experiment/interpolate-fft-denoise` tests a reconstruction-first workflow:
+
+- interpolate missing height points caused by low reflected signal / steep local gradients,
+- level the reconstructed map using the higher-land surface as the plane reference,
+- run FFT low-pass denoising for segmentation only,
+- calculate roughness statistics from the reconstructed detrended height data using the segmentation labels,
+- tune FFT denoise strength per map and rerun individual maps.
+
+Keep `main` as the stable release until this workflow is validated on several representative `.plux` files.
+
 ## Run the Browser App
 
 From this repository root:

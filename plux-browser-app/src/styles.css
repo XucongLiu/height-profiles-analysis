@@ -250,10 +250,118 @@ p {
   margin-bottom: 14px;
 }
 
-.result header span {
+.stepValue {
   color: #0d6b2c;
   font-weight: 760;
   white-space: nowrap;
+}
+
+.resultActions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.runControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.runControls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #536174;
+  font-size: 13px;
+}
+
+.runControls input {
+  width: 68px;
+  height: 34px;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+.rerunMapButton {
+  color: #ffffff;
+  border-color: transparent;
+  min-width: 104px;
+  justify-content: center;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.rerunMapButton.ready {
+  background: #2563eb;
+}
+
+.rerunMapButton.ready:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.rerunMapButton.running,
+.rerunMapButton.running:disabled {
+  background: #e78921;
+  color: #ffffff;
+  opacity: 1;
+}
+
+.rerunMapButton.done {
+  background: #12803a;
+}
+
+.rerunMapButton.done:hover:not(:disabled) {
+  background: #0d6b2c;
+}
+
+.rerunMapButton.error {
+  background: #a73535;
+}
+
+.mapStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #536174;
+  font-weight: 520;
+  font-size: 13px;
+  max-width: 360px;
+  text-align: right;
+}
+
+.mapStatus.idle {
+  color: #7b8796;
+}
+
+.mapStatus.done {
+  color: #0d6b2c;
+}
+
+.mapStatus.error {
+  color: #a73535;
+}
+
+.miniSpinner {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid #c4cfdb;
+  border-top-color: #7f8ea3;
+  animation: spin 1s linear infinite;
+  flex: 0 0 auto;
+}
+
+.miniDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8fa0b4;
+  flex: 0 0 auto;
 }
 
 .visuals {

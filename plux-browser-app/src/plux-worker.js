@@ -171,6 +171,58 @@ function detrendPlane(values, width, height, mask = null) {
   return out;
 }
 
+function interpolateMissing(values, width, height) {
+  const out = new Float32Array(values);
+  let missing = 0;
+  for (let i = 0; i < out.length; i++) if (!Number.isFinite(out[i])) missing++;
+  if (!missing) return { values: out, interpolated: 0 };
+
+  let previous = new Float32Array(out);
+  let filledTotal = 0;
+  for (let pass = 0; pass < 48 && missing > 0; pass++) {
+    let filledThisPass = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (Number.isFinite(previous[idx])) continue;
+        let sum = 0;
+        let count = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= height) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const xx = x + dx;
+            if (xx < 0 || xx >= width) continue;
+            const v = previous[yy * width + xx];
+            if (Number.isFinite(v)) { sum += v; count++; }
+          }
+        }
+        if (count) {
+          out[idx] = sum / count;
+          filledThisPass++;
+        }
+      }
+    }
+    if (!filledThisPass) break;
+    missing -= filledThisPass;
+    filledTotal += filledThisPass;
+    previous = new Float32Array(out);
+  }
+
+  if (missing > 0) {
+    const sample = sampleFinite(out, 500000);
+    const fallback = percentile(sample, 50);
+    for (let i = 0; i < out.length; i++) {
+      if (!Number.isFinite(out[i])) {
+        out[i] = fallback;
+        filledTotal++;
+      }
+    }
+  }
+  return { values: out, interpolated: filledTotal };
+}
+
 function levelUsingHigherLand(values, width, height) {
   const coarseAllLeveled = detrendPlane(values, width, height);
   const coarseCluster = clusterPlateaus(coarseAllLeveled, width, height);
@@ -197,6 +249,147 @@ function kmeans1d(sample, k, iterations = 80) {
     if (movement < 1e-6) break;
   }
   return centers;
+}
+
+function nextPow2(n) {
+  return 1 << Math.ceil(Math.log2(Math.max(2, n)));
+}
+
+function fft1d(re, im, inverse = false) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const angle = (inverse ? 2 : -2) * Math.PI / len;
+    const wLenR = Math.cos(angle);
+    const wLenI = Math.sin(angle);
+    for (let i = 0; i < n; i += len) {
+      let wr = 1;
+      let wi = 0;
+      for (let j = 0; j < len / 2; j++) {
+        const uR = re[i + j];
+        const uI = im[i + j];
+        const vR = re[i + j + len / 2] * wr - im[i + j + len / 2] * wi;
+        const vI = re[i + j + len / 2] * wi + im[i + j + len / 2] * wr;
+        re[i + j] = uR + vR;
+        im[i + j] = uI + vI;
+        re[i + j + len / 2] = uR - vR;
+        im[i + j + len / 2] = uI - vI;
+        const nextWr = wr * wLenR - wi * wLenI;
+        wi = wr * wLenI + wi * wLenR;
+        wr = nextWr;
+      }
+    }
+  }
+  if (inverse) {
+    for (let i = 0; i < n; i++) {
+      re[i] /= n;
+      im[i] /= n;
+    }
+  }
+}
+
+function fftLowPassForSegmentation(values, width, height, strength) {
+  const s = Math.max(0, Math.min(100, Number(strength) || 0)) / 100;
+  if (s <= 0) return values;
+  const target = Math.min(512, nextPow2(Math.max(width, height)));
+  const gridW = nextPow2(Math.max(64, Math.round(target)));
+  const gridH = nextPow2(Math.max(64, Math.round(target * height / width)));
+  const re = new Float32Array(gridW * gridH);
+  const im = new Float32Array(gridW * gridH);
+  let sum = 0;
+  let count = 0;
+  for (let gy = 0; gy < gridH; gy++) {
+    const sy = Math.min(height - 1, Math.round((gy / Math.max(1, gridH - 1)) * (height - 1)));
+    for (let gx = 0; gx < gridW; gx++) {
+      const sx = Math.min(width - 1, Math.round((gx / Math.max(1, gridW - 1)) * (width - 1)));
+      const v = values[sy * width + sx];
+      if (Number.isFinite(v)) {
+        re[gy * gridW + gx] = v;
+        sum += v;
+        count++;
+      }
+    }
+  }
+  const mean = count ? sum / count : 0;
+  for (let i = 0; i < re.length; i++) re[i] = Number.isFinite(re[i]) ? re[i] - mean : 0;
+
+  const rowRe = new Float32Array(gridW);
+  const rowIm = new Float32Array(gridW);
+  for (let y = 0; y < gridH; y++) {
+    const row = y * gridW;
+    for (let x = 0; x < gridW; x++) { rowRe[x] = re[row + x]; rowIm[x] = im[row + x]; }
+    fft1d(rowRe, rowIm, false);
+    for (let x = 0; x < gridW; x++) { re[row + x] = rowRe[x]; im[row + x] = rowIm[x]; }
+  }
+
+  const colRe = new Float32Array(gridH);
+  const colIm = new Float32Array(gridH);
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) { const idx = y * gridW + x; colRe[y] = re[idx]; colIm[y] = im[idx]; }
+    fft1d(colRe, colIm, false);
+    for (let y = 0; y < gridH; y++) { const idx = y * gridW + x; re[idx] = colRe[y]; im[idx] = colIm[y]; }
+  }
+
+  const maxRadius = Math.hypot(gridW / 2, gridH / 2);
+  const cutoff = maxRadius * (0.48 - 0.43 * s);
+  const taper = Math.max(2, cutoff * 0.25);
+  for (let y = 0; y < gridH; y++) {
+    const fy = y <= gridH / 2 ? y : y - gridH;
+    for (let x = 0; x < gridW; x++) {
+      const fx = x <= gridW / 2 ? x : x - gridW;
+      const r = Math.hypot(fx, fy);
+      if (r <= cutoff) continue;
+      const idx = y * gridW + x;
+      if (r >= cutoff + taper) {
+        re[idx] = 0;
+        im[idx] = 0;
+      } else {
+        const keep = 0.5 + 0.5 * Math.cos(Math.PI * (r - cutoff) / taper);
+        re[idx] *= keep;
+        im[idx] *= keep;
+      }
+    }
+  }
+
+  for (let x = 0; x < gridW; x++) {
+    for (let y = 0; y < gridH; y++) { const idx = y * gridW + x; colRe[y] = re[idx]; colIm[y] = im[idx]; }
+    fft1d(colRe, colIm, true);
+    for (let y = 0; y < gridH; y++) { const idx = y * gridW + x; re[idx] = colRe[y]; im[idx] = colIm[y]; }
+  }
+  for (let y = 0; y < gridH; y++) {
+    const row = y * gridW;
+    for (let x = 0; x < gridW; x++) { rowRe[x] = re[row + x]; rowIm[x] = im[row + x]; }
+    fft1d(rowRe, rowIm, true);
+    for (let x = 0; x < gridW; x++) re[row + x] = rowRe[x] + mean;
+  }
+
+  const out = new Float32Array(values.length);
+  for (let y = 0; y < height; y++) {
+    const gy = (y / Math.max(1, height - 1)) * (gridH - 1);
+    const y0 = Math.floor(gy);
+    const y1 = Math.min(gridH - 1, y0 + 1);
+    const fy = gy - y0;
+    for (let x = 0; x < width; x++) {
+      const gx = (x / Math.max(1, width - 1)) * (gridW - 1);
+      const x0 = Math.floor(gx);
+      const x1 = Math.min(gridW - 1, x0 + 1);
+      const fx = gx - x0;
+      const v00 = re[y0 * gridW + x0];
+      const v10 = re[y0 * gridW + x1];
+      const v01 = re[y1 * gridW + x0];
+      const v11 = re[y1 * gridW + x1];
+      out[y * width + x] = (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy;
+    }
+  }
+  return out;
 }
 
 function trimMask(values, labels, label, trimPercent) {
@@ -331,6 +524,66 @@ function boxBlurFinite(values, width, height, radius) {
   return out;
 }
 
+function gaussianKernel1d(sigma) {
+  if (sigma <= 0) return new Float32Array([1]);
+  const radius = Math.max(1, Math.round(sigma * 3));
+  const kernel = new Float32Array(radius * 2 + 1);
+  let sum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel[i + radius] = v;
+    sum += v;
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
+  return kernel;
+}
+
+function gaussianBlur(values, width, height, sigma) {
+  const kernel = gaussianKernel1d(sigma);
+  const radius = Math.floor(kernel.length / 2);
+  const horizontal = new Float32Array(values.length);
+  const out = new Float32Array(values.length);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const sx = Math.max(0, Math.min(width - 1, x + k));
+        sum += values[row + sx] * kernel[k + radius];
+      }
+      horizontal[row + x] = sum;
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const sy = Math.max(0, Math.min(height - 1, y + k));
+        sum += horizontal[sy * width + x] * kernel[k + radius];
+      }
+      out[row + x] = sum;
+    }
+  }
+  return out;
+}
+
+function gradientMagnitude(values, width, height) {
+  const out = new Float32Array(values.length);
+  for (let y = 0; y < height; y++) {
+    const ym = Math.max(0, y - 1);
+    const yp = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x++) {
+      const xm = Math.max(0, x - 1);
+      const xp = Math.min(width - 1, x + 1);
+      const gx = 0.5 * (values[y * width + xp] - values[y * width + xm]);
+      const gy = 0.5 * (values[yp * width + x] - values[ym * width + x]);
+      out[y * width + x] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return out;
+}
+
 function countMask(mask) {
   let count = 0;
   for (let i = 0; i < mask.length; i++) count += mask[i] ? 1 : 0;
@@ -418,9 +671,296 @@ function cleanSmallLabelComponents(labels, width, height, minPixels) {
   return labels;
 }
 
-function clusterPlateaus(values, width, height) {
+function majoritySmoothLabels(labels, width, height, iterations) {
+  if (iterations <= 0) return labels;
+  let current = labels;
+  let next = new Int8Array(labels.length);
+  const counts = new Int32Array(Math.max(8, options.clusters + 2));
+  for (let iter = 0; iter < iterations; iter++) {
+    next.set(current);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = y * width + x;
+        const label = current[idx];
+        if (label < 0) continue;
+        counts.fill(0);
+        for (let dy = -1; dy <= 1; dy++) {
+          const row = idx + dy * width;
+          for (let dx = -1; dx <= 1; dx++) {
+            const neighborLabel = current[row + dx];
+            if (neighborLabel >= 0) counts[neighborLabel]++;
+          }
+        }
+        let best = label;
+        let bestCount = counts[label];
+        for (let k = 0; k < counts.length; k++) {
+          if (counts[k] > bestCount) {
+            best = k;
+            bestCount = counts[k];
+          }
+        }
+        if (best !== label && bestCount >= 5) next[idx] = best;
+      }
+    }
+    const swap = current;
+    current = next;
+    next = swap;
+  }
+  if (current !== labels) labels.set(current);
+  return labels;
+}
+
+function fillSmallEnclosedHoles(mask, width, height, maxHolePixels) {
+  if (maxHolePixels <= 0) return mask;
+  const seen = new Uint8Array(mask.length);
+  const queue = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (mask[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    let touchesBorder = false;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesBorder = true;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= mask.length || seen[n] || mask[n]) continue;
+        const nx = n % width;
+        const ny = Math.floor(n / width);
+        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (!touchesBorder && queue.length <= maxHolePixels) {
+      for (const idx of queue) mask[idx] = 1;
+    }
+  }
+  return mask;
+}
+
+function maskFromLargeComponents(source, width, height, minPixels) {
+  if (minPixels <= 1) return source;
+  const seen = new Uint8Array(source.length);
+  const out = new Uint8Array(source.length);
+  const queue = [];
+  for (let start = 0; start < source.length; start++) {
+    if (!source[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= source.length || seen[n] || !source[n]) continue;
+        const nx = n % width;
+        if (Math.abs(nx - x) > 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (queue.length >= minPixels) {
+      for (const idx of queue) out[idx] = 1;
+    }
+  }
+  return out;
+}
+
+function pointSegmentDistance(point, a, b) {
+  const vx = b.y - a.y;
+  const vy = b.x - a.x;
+  const wx = point.y - a.y;
+  const wy = point.x - a.x;
+  const len2 = vx * vx + vy * vy;
+  if (len2 <= 1e-12) {
+    const dx = point.y - a.y;
+    const dy = point.x - a.x;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+  const py = a.y + t * vx;
+  const px = a.x + t * vy;
+  const dx = point.y - py;
+  const dy = point.x - px;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function simplifyCurve(points, tolerance) {
+  if (points.length <= 2 || tolerance <= 0) return points;
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [start, end] = stack.pop();
+    let maxDist = -1;
+    let maxIndex = -1;
+    for (let i = start + 1; i < end; i++) {
+      const d = pointSegmentDistance(points[i], points[start], points[end]);
+      if (d > maxDist) {
+        maxDist = d;
+        maxIndex = i;
+      }
+    }
+    if (maxDist > tolerance && maxIndex > start) {
+      keep[maxIndex] = 1;
+      stack.push([start, maxIndex], [maxIndex, end]);
+    }
+  }
+  const simplified = [];
+  for (let i = 0; i < points.length; i++) if (keep[i]) simplified.push(points[i]);
+  return simplified;
+}
+
+function simplifyCurveLimited(points, tolerance, maxPoints) {
+  if (!maxPoints || points.length <= maxPoints) return simplifyCurve(points, tolerance);
+  let epsilon = Math.max(0.5, tolerance);
+  let simplified = simplifyCurve(points, epsilon);
+  for (let i = 0; i < 12 && simplified.length > maxPoints; i++) {
+    epsilon *= 1.6;
+    simplified = simplifyCurve(points, epsilon);
+  }
+  return simplified;
+}
+
+function interpolateCurve(points, minY, maxY) {
+  const values = new Float32Array(maxY - minY + 1);
+  if (!points.length) return values;
+  let segment = 0;
+  for (let y = minY; y <= maxY; y++) {
+    while (segment < points.length - 2 && y > points[segment + 1].y) segment++;
+    const a = points[segment];
+    const b = points[Math.min(segment + 1, points.length - 1)];
+    const t = b.y === a.y ? 0 : (y - a.y) / (b.y - a.y);
+    values[y - minY] = a.x + (b.x - a.x) * Math.max(0, Math.min(1, t));
+  }
+  return values;
+}
+
+function vectorizeMaskByRowBoundaries(source, width, height, minPixels, tolerance, maxEdges = 0) {
+  if (tolerance <= 0) return source;
+  const seen = new Uint8Array(source.length);
+  const out = new Uint8Array(source.length);
+  const queue = [];
+  for (let start = 0; start < source.length; start++) {
+    if (!source[start] || seen[start]) continue;
+    seen[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    let head = 0;
+    let minY = height, maxY = 0, minX = width, maxX = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+      for (const n of neighbors) {
+        if (n < 0 || n >= source.length || seen[n] || !source[n]) continue;
+        const nx = n % width;
+        if (Math.abs(nx - x) > 1) continue;
+        seen[n] = 1;
+        queue.push(n);
+      }
+    }
+    if (queue.length < minPixels || maxY <= minY) continue;
+    const span = maxY - minY + 1;
+    const left = new Int32Array(span);
+    const right = new Int32Array(span);
+    left.fill(width);
+    right.fill(-1);
+    for (const idx of queue) {
+      const x = idx % width;
+      const y = Math.floor(idx / width) - minY;
+      if (x < left[y]) left[y] = x;
+      if (x > right[y]) right[y] = x;
+    }
+    const leftPoints = [];
+    const rightPoints = [];
+    for (let y = 0; y < span; y++) {
+      if (right[y] < left[y]) continue;
+      leftPoints.push({ y: y + minY, x: left[y] });
+      rightPoints.push({ y: y + minY, x: right[y] });
+    }
+    if (leftPoints.length < 2 || rightPoints.length < 2) {
+      for (const idx of queue) out[idx] = 1;
+      continue;
+    }
+    const maxCurvePoints = maxEdges > 0 ? Math.max(2, Math.ceil(maxEdges / 2) + 1) : 0;
+    const fittedLeft = interpolateCurve(simplifyCurveLimited(leftPoints, tolerance, maxCurvePoints), minY, maxY);
+    const fittedRight = interpolateCurve(simplifyCurveLimited(rightPoints, tolerance, maxCurvePoints), minY, maxY);
+    for (let y = minY; y <= maxY; y++) {
+      const row = y * width;
+      let x0 = Math.round(fittedLeft[y - minY]);
+      let x1 = Math.round(fittedRight[y - minY]);
+      if (x0 > x1) [x0, x1] = [x1, x0];
+      x0 = Math.max(0, Math.min(width - 1, x0));
+      x1 = Math.max(0, Math.min(width - 1, x1));
+      for (let x = x0; x <= x1; x++) out[row + x] = 1;
+    }
+  }
+  return out;
+}
+
+function dilateMask(mask, width, height, radius) {
+  if (radius <= 0) return mask.slice();
+  const out = new Uint8Array(mask.length);
+  const r2 = radius * radius;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (!mask[idx]) continue;
+      const y0 = Math.max(0, y - radius);
+      const y1 = Math.min(height - 1, y + radius);
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(width - 1, x + radius);
+      for (let yy = y0; yy <= y1; yy++) {
+        const dy = yy - y;
+        const row = yy * width;
+        for (let xx = x0; xx <= x1; xx++) {
+          const dx = xx - x;
+          if (dx * dx + dy * dy <= r2) out[row + xx] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function labelsFromCleanPlateaus(labels, lowMask, highMask, lowLabel, highLabel) {
+  for (let i = 0; i < labels.length; i++) {
+    if (lowMask[i]) labels[i] = lowLabel;
+    else if (highMask[i]) labels[i] = highLabel;
+  }
+}
+
+function resolveMaskOverlaps(lowMask, highMask, segmentationValues, lowCenter, highCenter) {
+  for (let i = 0; i < lowMask.length; i++) {
+    if (!lowMask[i] || !highMask[i]) continue;
+    const v = segmentationValues[i];
+    if (!Number.isFinite(v)) {
+      highMask[i] = 0;
+      continue;
+    }
+    if (Math.abs(v - lowCenter) <= Math.abs(v - highCenter)) highMask[i] = 0;
+    else lowMask[i] = 0;
+  }
+}
+
+function clusterPlateaus(values, width, height, segmentationOverride = null) {
+  const edgePolygonMode = options.segmentationMode === "edge-polygons";
   const spatialMode = options.segmentationMode !== "height";
-  const segmentationValues = spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values;
+  const segmentationValues = segmentationOverride || (edgePolygonMode ? gaussianBlur(values, width, height, Math.max(0, Number(options.edgeSigmaPx ?? 7))) : spatialMode ? boxBlurFinite(values, width, height, options.smoothRadiusPx) : values);
   const sample = sampleFinite(segmentationValues, options.maxSamples);
   const clipLo = percentile(sample, options.clipPercent);
   const clipHi = percentile(sample, 100 - options.clipPercent);
@@ -442,16 +982,28 @@ function clusterPlateaus(values, width, height) {
     counts[best]++;
   }
   if (spatialMode) {
-    cleanSmallLabelComponents(labels, width, height, Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100));
+    const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
+    const smoothIterations = Math.max(0, Math.min(32, Math.round(options.smoothRadiusPx || 0)));
+    cleanSmallLabelComponents(labels, width, height, minPixels);
+    majoritySmoothLabels(labels, width, height, smoothIterations);
+    cleanSmallLabelComponents(labels, width, height, minPixels);
     counts.fill(0);
     for (let i = 0; i < labels.length; i++) if (labels[i] >= 0) counts[labels[i]]++;
   }
   const plateau = counts.map((count, label) => ({ count, label })).sort((a, b) => b.count - a.count).slice(0, 2).map((x) => x.label).sort((a, b) => centers[a] - centers[b]);
   const lowAssigned = new Uint8Array(values.length);
   const highAssigned = new Uint8Array(values.length);
+  let edgeMask = null;
+  if (edgePolygonMode) {
+    const gradients = gradientMagnitude(segmentationValues, width, height);
+    const sampleGradients = sampleFinite(gradients, options.maxSamples);
+    const edgeThreshold = percentile(sampleGradients, Math.max(50, Math.min(99.9, Number(options.edgePercentile ?? 96))));
+    edgeMask = new Uint8Array(values.length);
+    for (let i = 0; i < gradients.length; i++) if (gradients[i] >= edgeThreshold) edgeMask[i] = 1;
+  }
   for (let i = 0; i < values.length; i++) {
-    if (labels[i] === plateau[0]) lowAssigned[i] = 1;
-    if (labels[i] === plateau[1]) highAssigned[i] = 1;
+    if (labels[i] === plateau[0] && !(edgeMask && edgeMask[i])) lowAssigned[i] = 1;
+    if (labels[i] === plateau[1] && !(edgeMask && edgeMask[i])) highAssigned[i] = 1;
   }
   let lowCore = lowAssigned;
   let highCore = highAssigned;
@@ -470,6 +1022,29 @@ function clusterPlateaus(values, width, height) {
       lowCore = trimMask(values, labels, plateau[0], options.trimPercent || 0);
       highCore = trimMask(values, labels, plateau[1], options.trimPercent || 0);
     }
+  } else {
+    const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
+    lowCore = maskFromLargeComponents(lowAssigned, width, height, minPixels);
+    highCore = maskFromLargeComponents(highAssigned, width, height, minPixels);
+    fillSmallEnclosedHoles(lowCore, width, height, minPixels);
+    fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    const requestedTolerance = Number(options.boundaryEpsilonPx ?? 18);
+    const vectorTolerance = Number.isFinite(requestedTolerance) ? Math.max(0, Math.min(200, requestedTolerance)) : 18;
+    const basinMaxEdges = edgePolygonMode ? 10 : 0;
+    const landMaxEdges = edgePolygonMode ? 30 : 0;
+    lowCore = vectorizeMaskByRowBoundaries(lowCore, width, height, minPixels, vectorTolerance, basinMaxEdges);
+    if (edgePolygonMode) {
+      const offset = Math.max(0, Math.min(80, Math.round(Number(options.ridgeOffsetPx ?? 20))));
+      const basinFence = dilateMask(lowCore, width, height, offset);
+      for (let i = 0; i < highCore.length; i++) if (basinFence[i]) highCore[i] = 0;
+      highCore = maskFromLargeComponents(highCore, width, height, minPixels);
+      fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    }
+    highCore = vectorizeMaskByRowBoundaries(highCore, width, height, minPixels, vectorTolerance, landMaxEdges);
+    fillSmallEnclosedHoles(lowCore, width, height, minPixels);
+    fillSmallEnclosedHoles(highCore, width, height, minPixels);
+    resolveMaskOverlaps(lowCore, highCore, segmentationValues, centers[plateau[0]], centers[plateau[1]]);
+    labelsFromCleanPlateaus(labels, lowCore, highCore, plateau[0], plateau[1]);
   }
   const minPixels = Math.ceil(values.length * Math.max(0, options.minRegionPercent || 0) / 100);
   return {
@@ -484,7 +1059,7 @@ function clusterPlateaus(values, width, height) {
     highMask: highCore,
     lowComponents: componentSummary(lowCore, width, height, spatialMode ? minPixels : 1),
     highComponents: componentSummary(highCore, width, height, spatialMode ? minPixels : 1),
-    segmentationMode: spatialMode ? "spatial" : "height"
+    segmentationMode: edgePolygonMode ? "edge-polygons" : spatialMode ? "cca-geometry" : "height"
   };
 }
 
@@ -592,13 +1167,15 @@ async function renderClusterMask(cluster, width, height, maxW = 520) {
 }
 
 async function analyze(measurement) {
-  let values = measurement.values;
+  const reconstruction = interpolateMissing(measurement.values, measurement.width, measurement.height);
+  let values = reconstruction.values;
   if (options.detrend && options.levelMode === "higher-land") {
-    values = levelUsingHigherLand(measurement.values, measurement.width, measurement.height);
+    values = levelUsingHigherLand(values, measurement.width, measurement.height);
   } else if (options.detrend) {
-    values = detrendPlane(measurement.values, measurement.width, measurement.height);
+    values = detrendPlane(values, measurement.width, measurement.height);
   }
-  const cluster = clusterPlateaus(values, measurement.width, measurement.height);
+  const denoisedSegmentation = options.segmentationMode === "edge-polygons" ? null : fftLowPassForSegmentation(values, measurement.width, measurement.height, options.fftDenoiseStrength);
+  const cluster = clusterPlateaus(values, measurement.width, measurement.height, denoisedSegmentation);
   const low = statsForMask(values, cluster.lowMask);
   const high = statsForMask(values, cluster.highMask);
   const lowAreaPx = countMask(cluster.lowMask);
@@ -620,7 +1197,13 @@ async function analyze(measurement) {
     edgeRadiusPx: options.edgeRadiusPx,
     segmentationMode: cluster.segmentationMode,
     smoothRadiusPx: options.smoothRadiusPx,
+    boundaryEpsilonPx: options.boundaryEpsilonPx ?? 18,
+    edgeSigmaPx: options.edgeSigmaPx ?? 7,
+    edgePercentile: options.edgePercentile ?? 96,
+    ridgeOffsetPx: options.ridgeOffsetPx ?? 20,
     minRegionPercent: options.minRegionPercent || 0,
+    fftDenoiseStrength: options.fftDenoiseStrength || 0,
+    interpolatedPoints: reconstruction.interpolated,
     low,
     high,
     lowArea: { pixels: lowAreaPx, percent: (lowAreaPx / totalPixels) * 100, fovUnits2: Number.isFinite(fovArea) ? fovArea * lowAreaPx / totalPixels : NaN, components: cluster.lowComponents },

@@ -11,6 +11,7 @@ const PALETTE = [
 let results = [];
 let lastUploadFiles = [];
 let isAnalyzing = false;
+let mapStatuses = {};
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -19,7 +20,12 @@ let options = {
   edgeRadiusPx: 5,
   segmentationMode: "spatial",
   smoothRadiusPx: 12,
+  boundaryEpsilonPx: 18,
+  edgeSigmaPx: 7,
+  edgePercentile: 96,
+  ridgeOffsetPx: 20,
   minRegionPercent: 1,
+  fftDenoiseStrength: 35,
   workerCount: 9,
   maxSamples: 700000,
 };
@@ -48,9 +54,14 @@ function renderShell() {
     clusters: "Number of height groups for k-means clustering. Use 3 when land, basin, and transition/rim populations are visible.",
     clipPercent: "Clip the highest and lowest height tails before clustering so extreme spikes do not pull the cluster centers.",
     edgeRadiusPx: "For per-pixel height segmentation, shrink each plateau mask inward by this many pixels before measuring roughness. Spatial area mode measures the full detected area.",
-    segmentationMode: "Spatial areas classifies a smoothed height map to find continuous land/basin regions, then measures all finite original detrended points inside those regions.",
-    smoothRadiusPx: "Radius of the low-pass smoothing used for spatial area detection. Larger values ignore more local roughness and isolated spikes.",
-    minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed into neighboring large regions.",
+    segmentationMode: "Choose the region segmentation strategy. Edge polygons uses Gaussian edge detection, then approximates basin borders as straight-line polygons.",
+    smoothRadiusPx: "Radius of the low-pass smoothing used before region detection. Larger values reduce local roughness before connected-component analysis.",
+    boundaryEpsilonPx: "Douglas-Peucker boundary simplification epsilon in pixels. Larger values use fewer polygon points, making borders straighter/simpler like a generalized coastline.",
+    edgeSigmaPx: "Gaussian blur sigma in pixels for edge-polygon segmentation. Larger values suppress laser texture and keep only macro land/basin borders.",
+    edgePercentile: "Gradient percentile used as ridge/edge threshold. Higher values keep fewer, stronger edge pixels.",
+    ridgeOffsetPx: "Offset from basin polygon to land side in pixels. This removes the ridge fence before measuring land roughness.",
+    minRegionPercent: "Minimum connected region size, as percent of the whole height map. Smaller islands are absorbed or ignored, and small enclosed holes are filled.",
+    fftDenoiseStrength: "FFT low-pass strength used only for segmentation labels. Roughness statistics use the reconstructed, detrended height values, not the denoised values.",
     workerCount: "Number of browser worker threads used for batch processing. More workers can be faster, but may use more memory and make the computer less responsive.",
   };
   root.innerHTML = `
@@ -93,12 +104,18 @@ function renderShell() {
           <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
           <label ${tip(tips.segmentationMode)}>Segmentation
             <select id="segmentationMode" ${tip(tips.segmentationMode)}>
-              <option value="spatial" selected>Spatial low-pass areas</option>
+              <option value="spatial" selected>CCA geometric regions</option>
+              <option value="edge-polygons">Gaussian edge polygons</option>
               <option value="height">Per-pixel height</option>
             </select>
           </label>
           <label ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
+          <label ${tip(tips.boundaryEpsilonPx)}>Boundary epsilon px <input id="boundaryEpsilonPx" type="number" min="0" max="200" step="1" value="18" ${tip(tips.boundaryEpsilonPx)} /></label>
+          <label ${tip(tips.edgeSigmaPx)}>Edge sigma px <input id="edgeSigmaPx" type="number" min="0" max="30" step="0.5" value="7" ${tip(tips.edgeSigmaPx)} /></label>
+          <label ${tip(tips.edgePercentile)}>Edge percentile <input id="edgePercentile" type="number" min="50" max="99.9" step="0.5" value="96" ${tip(tips.edgePercentile)} /></label>
+          <label ${tip(tips.ridgeOffsetPx)}>Ridge offset px <input id="ridgeOffsetPx" type="number" min="0" max="80" step="1" value="20" ${tip(tips.ridgeOffsetPx)} /></label>
           <label ${tip(tips.minRegionPercent)}>Minimum region % <input id="minRegionPercent" type="number" step="0.1" min="0" max="20" value="1" ${tip(tips.minRegionPercent)} /></label>
+          <label ${tip(tips.fftDenoiseStrength)}>FFT denoise % <input id="fftDenoiseStrength" type="number" step="1" min="0" max="100" value="35" ${tip(tips.fftDenoiseStrength)} /></label>
           <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
@@ -116,7 +133,7 @@ function renderShell() {
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
-  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "minRegionPercent", "workerCount"]) {
+  for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "boundaryEpsilonPx", "edgeSigmaPx", "edgePercentile", "ridgeOffsetPx", "minRegionPercent", "fftDenoiseStrength", "workerCount"]) {
     document.getElementById(id).onchange = readOptions;
   }
 }
@@ -130,7 +147,12 @@ function readOptions() {
     edgeRadiusPx: Number(document.getElementById("edgeRadiusPx").value),
     segmentationMode: document.getElementById("segmentationMode").value,
     smoothRadiusPx: Number(document.getElementById("smoothRadiusPx").value),
+    boundaryEpsilonPx: Number(document.getElementById("boundaryEpsilonPx").value),
+    edgeSigmaPx: Number(document.getElementById("edgeSigmaPx").value),
+    edgePercentile: Number(document.getElementById("edgePercentile").value),
+    ridgeOffsetPx: Number(document.getElementById("ridgeOffsetPx").value),
     minRegionPercent: Number(document.getElementById("minRegionPercent").value),
+    fftDenoiseStrength: Number(document.getElementById("fftDenoiseStrength").value),
     workerCount: Math.max(1, Math.min(12, Number(document.getElementById("workerCount").value) || 1)),
     maxSamples: 700000,
   };
@@ -664,6 +686,15 @@ function runWorkerJob(worker, item, jobOptions, id) {
   });
 }
 
+async function analyzeSingleItem(item, jobOptions) {
+  const worker = new Worker("./src/plux-worker.js");
+  try {
+    return await runWorkerJob(worker, item, jobOptions, `single-${Date.now()}`);
+  } finally {
+    worker.terminate();
+  }
+}
+
 async function analyzeWithWorkers(items, jobOptions) {
   if (!("Worker" in window)) {
     throw new Error("This browser does not support Web Workers.");
@@ -680,6 +711,7 @@ async function analyzeWithWorkers(items, jobOptions) {
       const item = items[index];
       setStatus(`Processing ${done + 1}-${Math.min(done + workerTotal, items.length)}/${items.length} with ${workerTotal} CPU workers...`, true);
       const result = await runWorkerJob(worker, item, jobOptions, `${lane}-${index}`);
+      result.sourceName = item.name;
       completed[index] = result;
       done++;
       results = completed.filter(Boolean);
@@ -705,6 +737,52 @@ async function rerunAnalysis() {
   await processFiles(lastUploadFiles);
 }
 
+async function rerunSingleResult(resultIndex) {
+  const current = results[resultIndex];
+  if (!current || isAnalyzing) return;
+  readOptions();
+  const denoiseInput = document.getElementById(`denoise-${resultIndex}`);
+  const epsilonInput = document.getElementById(`epsilon-${resultIndex}`);
+  const localOptions = {
+    ...options,
+    fftDenoiseStrength: Number(denoiseInput?.value ?? current.fftDenoiseStrength ?? options.fftDenoiseStrength),
+    boundaryEpsilonPx: Number(epsilonInput?.value ?? current.boundaryEpsilonPx ?? options.boundaryEpsilonPx),
+  };
+  isAnalyzing = true;
+  mapStatuses[resultIndex] = {
+    busy: true,
+    text: `Rerunning ${current.name.split(/[\\/]/).pop()} with FFT ${localOptions.fftDenoiseStrength}% and boundary epsilon ${localOptions.boundaryEpsilonPx}px...`,
+  };
+  renderResults();
+  updateSummary();
+  try {
+    const items = await expandUploads(lastUploadFiles);
+    const sourceName = current.sourceName || current.name;
+    const item = items.find((candidate) => candidate.name === sourceName || candidate.name === current.name);
+    if (!item) throw new Error(`Could not find the uploaded source for ${current.name}. Upload the file again, then rerun.`);
+    const updated = await analyzeSingleItem(item, localOptions);
+    updated.sourceName = item.name;
+    releaseResultUrls([results[resultIndex]]);
+    results[resultIndex] = updated;
+    mapStatuses[resultIndex] = {
+      busy: false,
+      text: `Updated with FFT ${localOptions.fftDenoiseStrength}% and boundary epsilon ${localOptions.boundaryEpsilonPx}px.`,
+    };
+    renderResults();
+  } catch (error) {
+    console.error(error);
+    mapStatuses[resultIndex] = {
+      busy: false,
+      error: true,
+      text: error.message || "Failed to rerun this map.",
+    };
+    renderResults();
+  } finally {
+    isAnalyzing = false;
+    updateSummary();
+  }
+}
+
 async function processFiles(files) {
   readOptions();
   if (!files.length) return;
@@ -713,6 +791,7 @@ async function processFiles(files) {
   updateSummary();
   releaseResultUrls(results);
   results = [];
+  mapStatuses = {};
   renderResults();
   try {
     const items = await expandUploads(files);
@@ -765,25 +844,33 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
+          <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px - edge sigma ${fmt(r.edgeSigmaPx, 1)} px - ridge offset ${fmt(r.ridgeOffsetPx, 0)} px - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
-        <span>${fmt(r.heightDifference)} um step</span>
+        <div class="resultActions">
+          <div class="runControls">
+            <span class="stepValue">${fmt(r.heightDifference)} um step</span>
+            <label title="FFT low-pass denoise strength used for segmentation only. Higher values remove more high-frequency content before clustering.">FFT % <input id="denoise-${idx}" type="number" min="0" max="100" step="1" value="${fmt(r.fftDenoiseStrength, 0)}" /></label>
+            <label title="Douglas-Peucker boundary simplification epsilon in pixels. Larger values use fewer boundary points and make the border more geometric.">Boundary ε <input id="epsilon-${idx}" type="number" min="0" max="200" step="1" value="${fmt(r.boundaryEpsilonPx, 0)}" /></label>
+            <button class="${rerunButtonClass(idx)}" data-rerun="${idx}" ${mapStatuses[idx]?.busy ? "disabled" : ""}>${mapStatuses[idx]?.busy ? "Running..." : "Rerun Map"}</button>
+          </div>
+          ${mapStatusMarkup(idx)}
+        </div>
       </header>
       <div class="visuals">
         <figure>
           <img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" />
           ${colorScale(r.heatmap)}
-          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin-core contour, white land-core contour</figcaption>
+          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>Cluster mask and measurement regions</span>
+            <span>Vector-fitted cluster mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
             <span class="legend">
-              <span><i class="swatch basinCore"></i>Basin core, measured</span>
-              <span><i class="swatch basinAssigned"></i>Small/edge basin pixels outside measured region</span>
-              <span><i class="swatch landCore"></i>Land core, measured</span>
-              <span><i class="swatch landAssigned"></i>Small/edge land pixels outside measured region</span>
+              <span><i class="swatch basinCore"></i>Basin region, measured</span>
+              <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
+              <span><i class="swatch landCore"></i>Land region, measured</span>
+              <span><i class="swatch landAssigned"></i>Initial land pixels cleaned out</span>
               <span><i class="swatch excluded"></i>Transition or other cluster</span>
               <span><i class="swatch invalid"></i>Invalid or unmeasured</span>
               <span><i class="swatch basinContour"></i>Cyan basin region outline</span>
@@ -801,7 +888,25 @@ function renderResults() {
       </table>
     </article>
   `).join("");
+  for (const button of content.querySelectorAll("[data-rerun]")) {
+    button.onclick = () => rerunSingleResult(Number(button.dataset.rerun));
+  }
   updateSummary();
+}
+
+function mapStatusMarkup(idx) {
+  const state = mapStatuses[idx];
+  const text = state?.text || "Ready";
+  const cls = state?.error ? "mapStatus error" : state?.busy ? "mapStatus busy" : state?.text ? "mapStatus done" : "mapStatus idle";
+  return `<div class="${cls}">${state?.busy ? '<i class="miniSpinner"></i>' : '<i class="miniDot"></i>'}${escapeHtml(text)}</div>`;
+}
+
+function rerunButtonClass(idx) {
+  const state = mapStatuses[idx];
+  if (state?.error) return "rerunMapButton error";
+  if (state?.busy) return "rerunMapButton running";
+  if (state?.text) return "rerunMapButton done";
+  return "rerunMapButton ready";
 }
 
 function escapeHtml(text) {
@@ -814,8 +919,8 @@ function csvEscape(value) {
 }
 
 function exportCsv(rows) {
-  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "min_region_percent", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
-  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.minRegionPercent, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
+  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "boundary_epsilon_px", "edge_sigma_px", "edge_percentile", "ridge_offset_px", "min_region_percent", "fft_denoise_percent", "interpolated_points", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
+  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.boundaryEpsilonPx, r.edgeSigmaPx, r.edgePercentile, r.ridgeOffsetPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
