@@ -188,6 +188,27 @@ p {
   color: #17202a;
 }
 
+.settings label.parameterDisabled {
+  color: #9aa6b4;
+  flex-wrap: wrap;
+}
+
+.settings label.parameterDisabled input,
+.settings label.parameterDisabled select {
+  background: #edf1f5;
+  border-color: #d8e0e8;
+  color: #9aa6b4;
+  cursor: not-allowed;
+}
+
+.settings label.parameterDisabled::after {
+  content: attr(data-disabled-reason);
+  font-size: 11px;
+  color: #8a97a8;
+  width: 100%;
+  margin-top: -4px;
+}
+
 .statusLine {
   min-height: 36px;
   display: flex;

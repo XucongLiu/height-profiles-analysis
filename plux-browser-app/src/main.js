@@ -31,6 +31,18 @@ let options = {
 };
 
 const root = document.getElementById("root");
+const PARAMETER_MODES = {
+  clusters: ["height", "spatial", "edge-polygons"],
+  clipPercent: ["height", "spatial", "edge-polygons"],
+  edgeRadiusPx: ["height"],
+  smoothRadiusPx: ["spatial", "edge-polygons"],
+  boundaryEpsilonPx: ["spatial", "edge-polygons"],
+  edgeSigmaPx: ["edge-polygons"],
+  edgePercentile: ["edge-polygons"],
+  ridgeOffsetPx: ["edge-polygons"],
+  minRegionPercent: ["spatial", "edge-polygons"],
+  fftDenoiseStrength: ["height", "spatial"],
+};
 
 function icon(name) {
   const paths = {
@@ -92,16 +104,16 @@ function renderShell() {
         </div>
         <div class="settings">
           <div class="settingsTitle">${icon("sliders")}Analysis</div>
-          <label ${tip(tips.detrend)}><input id="detrend" type="checkbox" checked /> Remove plane trend before clustering</label>
-          <label ${tip(tips.levelMode)}>Leveling basis
+          <label data-param="detrend" ${tip(tips.detrend)}><input id="detrend" type="checkbox" checked /> Remove plane trend before clustering</label>
+          <label data-param="levelMode" ${tip(tips.levelMode)}>Leveling basis
             <select id="levelMode" ${tip(tips.levelMode)}>
               <option value="higher-land" selected>Higher land only</option>
               <option value="all">All measured points</option>
             </select>
           </label>
-          <label ${tip(tips.clusters)}>Clusters <input id="clusters" type="number" min="2" max="5" value="3" ${tip(tips.clusters)} /></label>
-          <label ${tip(tips.clipPercent)}>Clip tails % <input id="clipPercent" type="number" step="0.5" min="0" max="10" value="1" ${tip(tips.clipPercent)} /></label>
-          <label ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
+          <label data-param="clusters" ${tip(tips.clusters)}>Clusters <input id="clusters" type="number" min="2" max="5" value="3" ${tip(tips.clusters)} /></label>
+          <label data-param="clipPercent" ${tip(tips.clipPercent)}>Clip tails % <input id="clipPercent" type="number" step="0.5" min="0" max="10" value="1" ${tip(tips.clipPercent)} /></label>
+          <label data-param="edgeRadiusPx" ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
           <label ${tip(tips.segmentationMode)}>Segmentation
             <select id="segmentationMode" ${tip(tips.segmentationMode)}>
               <option value="spatial" selected>CCA geometric regions</option>
@@ -109,14 +121,14 @@ function renderShell() {
               <option value="height">Per-pixel height</option>
             </select>
           </label>
-          <label ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
-          <label ${tip(tips.boundaryEpsilonPx)}>Boundary epsilon px <input id="boundaryEpsilonPx" type="number" min="0" max="200" step="1" value="18" ${tip(tips.boundaryEpsilonPx)} /></label>
-          <label ${tip(tips.edgeSigmaPx)}>Edge sigma px <input id="edgeSigmaPx" type="number" min="0" max="30" step="0.5" value="7" ${tip(tips.edgeSigmaPx)} /></label>
-          <label ${tip(tips.edgePercentile)}>Edge percentile <input id="edgePercentile" type="number" min="50" max="99.9" step="0.5" value="96" ${tip(tips.edgePercentile)} /></label>
-          <label ${tip(tips.ridgeOffsetPx)}>Ridge offset px <input id="ridgeOffsetPx" type="number" min="0" max="80" step="1" value="20" ${tip(tips.ridgeOffsetPx)} /></label>
-          <label ${tip(tips.minRegionPercent)}>Minimum region % <input id="minRegionPercent" type="number" step="0.1" min="0" max="20" value="1" ${tip(tips.minRegionPercent)} /></label>
-          <label ${tip(tips.fftDenoiseStrength)}>FFT denoise % <input id="fftDenoiseStrength" type="number" step="1" min="0" max="100" value="35" ${tip(tips.fftDenoiseStrength)} /></label>
-          <label ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
+          <label data-param="smoothRadiusPx" ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
+          <label data-param="boundaryEpsilonPx" ${tip(tips.boundaryEpsilonPx)}>Boundary epsilon px <input id="boundaryEpsilonPx" type="number" min="0" max="200" step="1" value="18" ${tip(tips.boundaryEpsilonPx)} /></label>
+          <label data-param="edgeSigmaPx" ${tip(tips.edgeSigmaPx)}>Edge sigma px <input id="edgeSigmaPx" type="number" min="0" max="30" step="0.5" value="7" ${tip(tips.edgeSigmaPx)} /></label>
+          <label data-param="edgePercentile" ${tip(tips.edgePercentile)}>Edge percentile <input id="edgePercentile" type="number" min="50" max="99.9" step="0.5" value="96" ${tip(tips.edgePercentile)} /></label>
+          <label data-param="ridgeOffsetPx" ${tip(tips.ridgeOffsetPx)}>Ridge offset px <input id="ridgeOffsetPx" type="number" min="0" max="80" step="1" value="20" ${tip(tips.ridgeOffsetPx)} /></label>
+          <label data-param="minRegionPercent" ${tip(tips.minRegionPercent)}>Minimum region % <input id="minRegionPercent" type="number" step="0.1" min="0" max="20" value="1" ${tip(tips.minRegionPercent)} /></label>
+          <label data-param="fftDenoiseStrength" ${tip(tips.fftDenoiseStrength)}>FFT denoise % <input id="fftDenoiseStrength" type="number" step="1" min="0" max="100" value="35" ${tip(tips.fftDenoiseStrength)} /></label>
+          <label data-param="workerCount" ${tip(tips.workerCount)}>CPU workers <input id="workerCount" type="number" min="1" max="12" value="${options.workerCount}" ${tip(tips.workerCount)} /></label>
         </div>
       </section>
       <section class="statusLine"><span class="dot"></span><span id="status">Ready</span><strong id="summary"></strong></section>
@@ -134,8 +146,12 @@ function renderShell() {
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
   for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "boundaryEpsilonPx", "edgeSigmaPx", "edgePercentile", "ridgeOffsetPx", "minRegionPercent", "fftDenoiseStrength", "workerCount"]) {
-    document.getElementById(id).onchange = readOptions;
+    document.getElementById(id).onchange = () => {
+      readOptions();
+      updateParameterAvailability();
+    };
   }
+  updateParameterAvailability();
 }
 
 function readOptions() {
@@ -156,6 +172,26 @@ function readOptions() {
     workerCount: Math.max(1, Math.min(12, Number(document.getElementById("workerCount").value) || 1)),
     maxSamples: 700000,
   };
+}
+
+function updateParameterAvailability() {
+  const mode = document.getElementById("segmentationMode")?.value || options.segmentationMode;
+  const detrendOn = document.getElementById("detrend")?.checked ?? options.detrend;
+  for (const label of document.querySelectorAll(".settings [data-param]")) {
+    const id = label.dataset.param;
+    let enabled = true;
+    if (PARAMETER_MODES[id]) enabled = PARAMETER_MODES[id].includes(mode);
+    if (id === "levelMode") enabled = detrendOn;
+    const control = label.querySelector("input, select");
+    if (control) control.disabled = !enabled;
+    label.classList.toggle("parameterDisabled", !enabled);
+    if (!enabled) {
+      const modeText = mode === "height" ? "Per-pixel height" : mode === "spatial" ? "CCA geometric regions" : "Gaussian edge polygons";
+      label.dataset.disabledReason = id === "levelMode" ? "Only used when detrending is enabled." : `Not used by ${modeText}.`;
+    } else {
+      delete label.dataset.disabledReason;
+    }
+  }
 }
 
 function setStatus(text, busy = false) {
