@@ -181,8 +181,14 @@ function updateSummary() {
 
 function releaseResultUrls(rows) {
   for (const row of rows) {
-    if (row?.heatmap?.url) URL.revokeObjectURL(row.heatmap.url);
-    if (row?.maskUrl) URL.revokeObjectURL(row.maskUrl);
+    const urls = new Set([
+      row?.heatmap?.url,
+      row?.rawHeatmap?.url,
+      row?.detrendedHeatmap?.url,
+      row?.interpolatedHeatmap?.url,
+      row?.maskUrl,
+    ].filter(Boolean));
+    for (const url of urls) URL.revokeObjectURL(url);
   }
 }
 
@@ -673,8 +679,12 @@ function runWorkerJob(worker, item, jobOptions, id) {
       if (message.id !== id) return;
       if (message.ok) {
         const result = message.result;
-        result.heatmap.url = URL.createObjectURL(result.heatmap.blob);
-        delete result.heatmap.blob;
+        for (const key of ["rawHeatmap", "detrendedHeatmap", "interpolatedHeatmap", "heatmap"]) {
+          if (result[key]?.blob) {
+            result[key].url = URL.createObjectURL(result[key].blob);
+            delete result[key].blob;
+          }
+        }
         result.maskUrl = URL.createObjectURL(result.maskBlob);
         delete result.maskBlob;
         resolve(result);
@@ -818,12 +828,13 @@ function fmt(value, digits = 3) {
 function colorScale(heatmap) {
   const lo = fmt(heatmap.low);
   const hi = fmt(heatmap.high);
+  const mid = escapeHtml(heatmap.zeroLabel || "0 um land mean");
   return `
-    <div class="colorScale" aria-label="Height color scale relative to land mean">
+    <div class="colorScale" aria-label="Height color scale">
       <div class="colorBar"></div>
       <div class="scaleTicks">
         <span>${lo} um</span>
-        <span>0 um land mean</span>
+        <span>${mid}</span>
         <span>${hi} um</span>
       </div>
     </div>
@@ -858,14 +869,24 @@ function renderResults() {
       </header>
       <div class="visuals">
         <figure>
-          <img src="${r.heatmap.url}" alt="Detrended height map ${idx + 1}" />
-          ${colorScale(r.heatmap)}
-          <figcaption>Detrended height map - colors are relative to land mean height set to 0 um - cyan basin outline, white land outline</figcaption>
+          <img src="${(r.rawHeatmap || r.heatmap).url}" alt="Raw height map ${idx + 1}" />
+          ${colorScale(r.rawHeatmap || r.heatmap)}
+          <figcaption>1. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
+        </figure>
+        <figure>
+          <img src="${(r.detrendedHeatmap || r.heatmap).url}" alt="Detrended measured height map ${idx + 1}" />
+          ${colorScale(r.detrendedHeatmap || r.heatmap)}
+          <figcaption>2. Detrended height map - measured pixels only, no interpolation</figcaption>
+        </figure>
+        <figure>
+          <img src="${(r.interpolatedHeatmap || r.heatmap).url}" alt="Detrended and interpolated height map ${idx + 1}" />
+          ${colorScale(r.interpolatedHeatmap || r.heatmap)}
+          <figcaption>3. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>Vector-fitted cluster mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
+            <span>4. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin region, measured</span>
               <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>

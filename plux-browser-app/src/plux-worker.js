@@ -1105,7 +1105,7 @@ async function canvasToBlob(canvas) {
   return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
 
-async function renderHeatmap(values, width, height, cluster, zeroLevel, maxW = 520) {
+async function renderHeatmap(values, width, height, cluster, zeroLevel, maxW = 520, zeroLabel = "0 um land mean", symmetric = true) {
   const adjusted = new Float32Array(values.length);
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
@@ -1114,9 +1114,17 @@ async function renderHeatmap(values, width, height, cluster, zeroLevel, maxW = 5
   const sample = sampleFinite(adjusted, 500000);
   const p1 = percentile(sample, 1);
   const p99 = percentile(sample, 99);
-  const maxAbs = Math.max(Math.abs(p1), Math.abs(p99), 1e-9);
-  const lo = -maxAbs;
-  const hi = maxAbs;
+  let lo = p1;
+  let hi = p99;
+  if (symmetric) {
+    const maxAbs = Math.max(Math.abs(p1), Math.abs(p99), 1e-9);
+    lo = -maxAbs;
+    hi = maxAbs;
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+    lo = -1;
+    hi = 1;
+  }
   const scale = Math.min(1, maxW / width);
   const w = Math.max(1, Math.round(width * scale));
   const h = Math.max(1, Math.round(height * scale));
@@ -1131,12 +1139,12 @@ async function renderHeatmap(values, width, height, cluster, zeroLevel, maxW = 5
       const v = adjusted[idx];
       const p = (y * w + x) * 4;
       let color = Number.isFinite(v) ? paletteColor((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) : [28, 28, 28];
-      color = contourColor(cluster, idx) || color;
+      if (cluster) color = contourColor(cluster, idx) || color;
       img.data[p] = color[0]; img.data[p + 1] = color[1]; img.data[p + 2] = color[2]; img.data[p + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
-  return { blob: await canvasToBlob(canvas), low: lo, high: hi, zeroLevel };
+  return { blob: await canvasToBlob(canvas), low: lo, high: hi, zeroLevel, zeroLabel };
 }
 
 async function renderClusterMask(cluster, width, height, maxW = 520) {
@@ -1167,6 +1175,8 @@ async function renderClusterMask(cluster, width, height, maxW = 520) {
 }
 
 async function analyze(measurement) {
+  const rawValues = measurement.values;
+  const rawDetrendedValues = options.detrend ? detrendPlane(rawValues, measurement.width, measurement.height) : rawValues;
   const reconstruction = interpolateMissing(measurement.values, measurement.width, measurement.height);
   let values = reconstruction.values;
   if (options.detrend && options.levelMode === "higher-land") {
@@ -1182,9 +1192,11 @@ async function analyze(measurement) {
   const highAreaPx = countMask(cluster.highMask);
   const totalPixels = measurement.width * measurement.height;
   const fovArea = Number.isFinite(measurement.fovX) && Number.isFinite(measurement.fovY) ? measurement.fovX * measurement.fovY : NaN;
-  const heatmap = await renderHeatmap(values, measurement.width, measurement.height, cluster, high.mean);
+  const rawHeatmap = await renderHeatmap(rawValues, measurement.width, measurement.height, null, 0, 520, "raw p1-p99 scale", false);
+  const detrendedHeatmap = await renderHeatmap(rawDetrendedValues, measurement.width, measurement.height, null, 0, 520, "0 um after detrend", true);
+  const interpolatedHeatmap = await renderHeatmap(values, measurement.width, measurement.height, cluster, high.mean, 520, "0 um land mean", true);
   const maskBlob = await renderClusterMask(cluster, measurement.width, measurement.height);
-  const measuredFraction = finiteFraction(values);
+  const measuredFraction = finiteFraction(rawValues);
   return {
     name: measurement.name,
     width: measurement.width,
@@ -1208,7 +1220,10 @@ async function analyze(measurement) {
     high,
     lowArea: { pixels: lowAreaPx, percent: (lowAreaPx / totalPixels) * 100, fovUnits2: Number.isFinite(fovArea) ? fovArea * lowAreaPx / totalPixels : NaN, components: cluster.lowComponents },
     highArea: { pixels: highAreaPx, percent: (highAreaPx / totalPixels) * 100, fovUnits2: Number.isFinite(fovArea) ? fovArea * highAreaPx / totalPixels : NaN, components: cluster.highComponents },
-    heatmap,
+    rawHeatmap,
+    detrendedHeatmap,
+    interpolatedHeatmap,
+    heatmap: interpolatedHeatmap,
     maskBlob,
     clusterCenters: cluster.centers,
     measuredFraction,
