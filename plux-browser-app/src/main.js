@@ -12,6 +12,7 @@ let results = [];
 let lastUploadFiles = [];
 let isAnalyzing = false;
 let mapStatuses = {};
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -85,6 +86,7 @@ function renderShell() {
         </div>
         <div class="topActions">
           <button id="rerunBtn" disabled>${icon("sliders")}Rerun Analysis</button>
+          <button class="export" id="pdfBtn" disabled>${icon("export")}PDF Report</button>
           <button class="export" id="exportBtn" disabled>${icon("export")}Export CSV</button>
         </div>
       </section>
@@ -93,14 +95,14 @@ function renderShell() {
           <span class="bigIcon">${icon("upload")}</span>
           <div>
             <strong>Load PLUX data locally</strong>
-            <span>Choose local .plux files, a folder containing .plux files, or a .zip containing multiple .plux files.</span>
+            <span>Choose local .plux files plus optional sample images, a folder, or a .zip containing multiple files.</span>
           </div>
           <div class="uploadActions">
             <button id="folderBtn">${icon("folder")}Folder</button>
             <button id="fileBtn">${icon("zip")}Files or ZIP</button>
           </div>
           <input id="folderInput" type="file" webkitdirectory directory multiple />
-          <input id="fileInput" type="file" multiple accept=".plux,.zip" />
+          <input id="fileInput" type="file" multiple accept=".plux,.zip,.jpg,.jpeg,.png,.webp" />
         </div>
         <div class="settings">
           <div class="settingsTitle">${icon("sliders")}Analysis</div>
@@ -144,6 +146,7 @@ function renderShell() {
   document.getElementById("folderInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
+  document.getElementById("pdfBtn").onclick = () => exportPdfReport();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
   for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "boundaryEpsilonPx", "edgeSigmaPx", "edgePercentile", "ridgeOffsetPx", "minRegionPercent", "fftDenoiseStrength", "workerCount"]) {
     document.getElementById(id).onchange = () => {
@@ -203,8 +206,10 @@ function setStatus(text, busy = false) {
 
 function updateSummary() {
   const exportBtn = document.getElementById("exportBtn");
+  const pdfBtn = document.getElementById("pdfBtn");
   const rerunBtn = document.getElementById("rerunBtn");
   exportBtn.disabled = !results.length;
+  pdfBtn.disabled = !results.length;
   rerunBtn.disabled = !lastUploadFiles.length || isAnalyzing;
   const summary = document.getElementById("summary");
   if (!results.length) {
@@ -222,6 +227,7 @@ function releaseResultUrls(rows) {
       row?.rawHeatmap?.url,
       row?.detrendedHeatmap?.url,
       row?.interpolatedHeatmap?.url,
+      row?.sampleImageUrl,
       row?.maskUrl,
     ].filter(Boolean));
     for (const url of urls) URL.revokeObjectURL(url);
@@ -310,20 +316,51 @@ async function readPluxFromArrayBuffer(name, arrayBuffer) {
 
 async function expandUploads(files) {
   const items = [];
+  const images = new Map();
+  const addImage = (name, blob) => {
+    const key = sampleKey(name);
+    if (key) images.set(key, { name, blob });
+  };
   for (const file of files) {
     const name = file.webkitRelativePath || file.name;
     if (file.name.toLowerCase().endsWith(".plux")) {
       items.push({ name, buffer: await file.arrayBuffer() });
+    } else if (isImageName(file.name)) {
+      addImage(name, file);
     } else if (file.name.toLowerCase().endsWith(".zip")) {
       const zip = await readZipEntries(await file.arrayBuffer());
       for (const [entryName, entry] of Object.entries(zip)) {
         if (entryName.toLowerCase().endsWith(".plux")) {
           items.push({ name: `${file.name}/${entryName}`, buffer: await entry.arrayBuffer() });
+        } else if (isImageName(entryName)) {
+          addImage(`${file.name}/${entryName}`, new Blob([await entry.arrayBuffer()], { type: imageMimeType(entryName) }));
         }
       }
     }
   }
+  for (const item of items) {
+    const image = images.get(sampleKey(item.name));
+    if (image) item.sampleImage = image;
+  }
   return items;
+}
+
+function isImageName(name) {
+  const lower = name.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function imageMimeType(name) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+function sampleKey(name) {
+  const file = String(name).split(/[\\/]/).pop() || "";
+  const match = file.match(/P\d{4}/i);
+  return match ? match[0].toUpperCase() : "";
 }
 
 function percentile(values, p) {
@@ -758,6 +795,10 @@ async function analyzeWithWorkers(items, jobOptions) {
       setStatus(`Processing ${done + 1}-${Math.min(done + workerTotal, items.length)}/${items.length} with ${workerTotal} CPU workers...`, true);
       const result = await runWorkerJob(worker, item, jobOptions, `${lane}-${index}`);
       result.sourceName = item.name;
+      if (item.sampleImage) {
+        result.sampleImageName = item.sampleImage.name;
+        result.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
+      }
       completed[index] = result;
       done++;
       results = completed.filter(Boolean);
@@ -808,6 +849,10 @@ async function rerunSingleResult(resultIndex) {
     if (!item) throw new Error(`Could not find the local source for ${current.name}. Load the file again, then rerun.`);
     const updated = await analyzeSingleItem(item, localOptions);
     updated.sourceName = item.name;
+    if (item.sampleImage) {
+      updated.sampleImageName = item.sampleImage.name;
+      updated.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
+    }
     releaseResultUrls([results[resultIndex]]);
     results[resultIndex] = updated;
     mapStatuses[resultIndex] = {
@@ -903,26 +948,32 @@ function renderResults() {
           ${mapStatusMarkup(idx)}
         </div>
       </header>
-      <div class="visuals">
+      <div class="visuals ${r.sampleImageUrl ? "withSampleImage" : ""}">
+        ${r.sampleImageUrl ? `
+        <figure>
+          <img src="${r.sampleImageUrl}" alt="Raw sample photo ${idx + 1}" />
+          <figcaption>1. Raw sample image - ${escapeHtml(r.sampleImageName || "")}</figcaption>
+        </figure>
+        ` : ""}
         <figure>
           <img src="${(r.rawHeatmap || r.heatmap).url}" alt="Raw height map ${idx + 1}" />
           ${colorScale(r.rawHeatmap || r.heatmap)}
-          <figcaption>1. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
+          <figcaption>${r.sampleImageUrl ? "2" : "1"}. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.detrendedHeatmap || r.heatmap).url}" alt="Detrended measured height map ${idx + 1}" />
           ${colorScale(r.detrendedHeatmap || r.heatmap)}
-          <figcaption>2. Detrended height map - measured pixels only, no interpolation</figcaption>
+          <figcaption>${r.sampleImageUrl ? "3" : "2"}. Detrended height map - measured pixels only, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.interpolatedHeatmap || r.heatmap).url}" alt="Detrended and interpolated height map ${idx + 1}" />
           ${colorScale(r.interpolatedHeatmap || r.heatmap)}
-          <figcaption>3. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
+          <figcaption>${r.sampleImageUrl ? "4" : "3"}. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>4. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
+            <span>${r.sampleImageUrl ? "5" : "4"}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin region, measured</span>
               <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
@@ -985,6 +1036,84 @@ function exportCsv(rows) {
   a.download = "plux_plateau_statistics.csv";
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function exportPdfReport() {
+  if (!results.length) return;
+  const report = window.open("", "_blank");
+  if (!report) {
+    setStatus("Popup blocked. Allow popups, then export the PDF report again.");
+    return;
+  }
+  report.document.write(buildReportHtml());
+  report.document.close();
+  report.focus();
+  setTimeout(() => report.print(), 800);
+}
+
+function buildReportHtml() {
+  const generated = new Date().toLocaleString();
+  const averageStep = results.reduce((acc, r) => acc + r.heightDifference, 0) / results.length;
+  const optionRows = [
+    ["Segmentation", options.segmentationMode],
+    ["Leveling basis", options.detrend ? options.levelMode : "none"],
+    ["Clusters", options.clusters],
+    ["Clip tails %", options.clipPercent],
+    ["Area smoothing px", options.smoothRadiusPx],
+    ["Boundary epsilon px", options.boundaryEpsilonPx],
+    ["Edge sigma px", options.edgeSigmaPx],
+    ["Edge percentile", options.edgePercentile],
+    ["Ridge offset px", options.ridgeOffsetPx],
+    ["Minimum region %", options.minRegionPercent],
+    ["FFT denoise %", options.fftDenoiseStrength],
+  ];
+  const hasImages = results.some((r) => r.sampleImageUrl);
+  return `<!doctype html><html><head><meta charset="utf-8" />
+    <title>PLUX Surface Analysis Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #17202a; margin: 24px; }
+      h1 { margin: 0 0 4px; font-size: 24px; }
+      h2 { margin: 20px 0 8px; font-size: 17px; break-after: avoid; }
+      p { color: #536174; margin: 4px 0 10px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 12px; }
+      th, td { border-bottom: 1px solid #d8e0e8; padding: 6px 7px; text-align: right; }
+      th:first-child, td:first-child { text-align: left; }
+      .setup { max-width: 780px; }
+      .sample { break-inside: avoid; page-break-inside: avoid; margin-top: 16px; }
+      .plots { display: grid; grid-template-columns: repeat(${hasImages ? 5 : 4}, minmax(0, 1fr)); gap: 7px; align-items: start; }
+      figure { margin: 0; border: 1px solid #d8e0e8; border-radius: 4px; overflow: hidden; }
+      figure img { display: block; width: 100%; height: auto; }
+      figcaption { font-size: 10px; padding: 5px; color: #536174; border-top: 1px solid #d8e0e8; }
+      @page { size: A4 landscape; margin: 10mm; }
+      @media print { body { margin: 0; } }
+    </style></head><body>
+    <h1>PLUX Surface Analysis Report</h1>
+    <p>Generated ${escapeHtml(generated)}. ${results.length} PLUX files processed. Average height step ${fmt(averageStep)} um.</p>
+    <h2>Setup Parameters</h2>
+    <table class="setup"><tbody>${optionRows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`).join("")}</tbody></table>
+    ${results.map(reportSampleHtml).join("")}
+  </body></html>`;
+}
+
+function reportSampleHtml(r, idx) {
+  const plots = [];
+  if (r.sampleImageUrl) plots.push(["Sample image", r.sampleImageUrl]);
+  plots.push(["Raw height", (r.rawHeatmap || r.heatmap).url]);
+  plots.push(["Detrended", (r.detrendedHeatmap || r.heatmap).url]);
+  plots.push(["Detrended + interpolated", (r.interpolatedHeatmap || r.heatmap).url]);
+  plots.push(["Measurement mask", r.maskUrl]);
+  return `<section class="sample">
+    <h2>${idx + 1}. ${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
+    <p>${r.width} x ${r.height} px, measured ${(r.measuredFraction * 100).toFixed(1)}%, segmentation ${escapeHtml(r.segmentationMode)}, height step ${fmt(r.heightDifference)} um.</p>
+    <div class="plots">${plots.map(([caption, src]) => `<figure><img src="${src}" /><figcaption>${escapeHtml(caption)}</figcaption></figure>`).join("")}</div>
+    <table>
+      <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th></tr></thead>
+      <tbody>
+        <tr><td>Lower basin</td><td>${fmt(r.low.mean)}</td><td>${fmt(r.low.Sa)}</td><td>${fmt(r.low.Sq)}</td><td>${fmt(r.low.Sz)}</td><td>${r.low.points.toLocaleString()}</td><td>${fmt(r.lowArea?.percent)}</td></tr>
+        <tr><td>Higher land</td><td>${fmt(r.high.mean)}</td><td>${fmt(r.high.Sa)}</td><td>${fmt(r.high.Sq)}</td><td>${fmt(r.high.Sz)}</td><td>${r.high.points.toLocaleString()}</td><td>${fmt(r.highArea?.percent)}</td></tr>
+      </tbody>
+    </table>
+  </section>`;
 }
 
 renderShell();

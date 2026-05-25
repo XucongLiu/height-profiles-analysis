@@ -392,6 +392,10 @@ p {
   margin-bottom: 14px;
 }
 
+.visuals.withSampleImage {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 figure {
   margin: 0;
   min-width: 0;
@@ -526,7 +530,8 @@ tr:last-child td {
 }
 
 @media (max-width: 1300px) {
-  .visuals {
+  .visuals,
+  .visuals.withSampleImage {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -543,7 +548,8 @@ tr:last-child td {
   }
 
   .controls,
-  .visuals {
+  .visuals,
+  .visuals.withSampleImage {
     grid-template-columns: 1fr;
   }
 
