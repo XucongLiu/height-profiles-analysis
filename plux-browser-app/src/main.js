@@ -12,6 +12,7 @@ let results = [];
 let lastUploadFiles = [];
 let isAnalyzing = false;
 let mapStatuses = {};
+let reportOverviewImages = {};
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 let options = {
   detrend: true,
@@ -234,6 +235,12 @@ function releaseResultUrls(rows) {
   }
 }
 
+function releaseOverviewUrls(images) {
+  for (const image of Object.values(images || {})) {
+    if (image?.url) URL.revokeObjectURL(image.url);
+  }
+}
+
 function parseXml(text) {
   return new DOMParser().parseFromString(text, "application/xml");
 }
@@ -317,7 +324,18 @@ async function readPluxFromArrayBuffer(name, arrayBuffer) {
 async function expandUploads(files) {
   const items = [];
   const images = new Map();
+  const overviewImages = {};
+  const addOverviewImage = (name, blob) => {
+    const kind = overviewImageKind(name);
+    if (!kind) return false;
+    const priority = /p00xx/i.test(name) ? 2 : 1;
+    if (!overviewImages[kind] || priority >= overviewImages[kind].priority) {
+      overviewImages[kind] = { name, blob, priority };
+    }
+    return true;
+  };
   const addImage = (name, blob) => {
+    if (addOverviewImage(name, blob)) return;
     const key = sampleKey(name);
     if (key) images.set(key, { name, blob });
   };
@@ -342,7 +360,7 @@ async function expandUploads(files) {
     const image = images.get(sampleKey(item.name));
     if (image) item.sampleImage = image;
   }
-  return items;
+  return { items, overviewImages };
 }
 
 function isImageName(name) {
@@ -355,6 +373,25 @@ function imageMimeType(name) {
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".webp")) return "image/webp";
   return "image/jpeg";
+}
+
+function overviewImageKind(name) {
+  const file = String(name).split(/[\\/]/).pop()?.toLowerCase() || "";
+  if (!file.includes("inspection samples id")) return "";
+  if (file.includes("raw")) return "raw";
+  if (file.includes("labelled") || file.includes("labeled")) return "labelled";
+  return "";
+}
+
+function makeOverviewUrls(overviewImages) {
+  const out = {};
+  for (const [key, image] of Object.entries(overviewImages || {})) {
+    out[key] = {
+      name: image.name,
+      url: URL.createObjectURL(image.blob),
+    };
+  }
+  return out;
 }
 
 function sampleKey(name) {
@@ -843,7 +880,8 @@ async function rerunSingleResult(resultIndex) {
   renderResults();
   updateSummary();
   try {
-    const items = await expandUploads(lastUploadFiles);
+    const upload = await expandUploads(lastUploadFiles);
+    const items = upload.items;
     const sourceName = current.sourceName || current.name;
     const item = items.find((candidate) => candidate.name === sourceName || candidate.name === current.name);
     if (!item) throw new Error(`Could not find the local source for ${current.name}. Load the file again, then rerun.`);
@@ -881,11 +919,15 @@ async function processFiles(files) {
   setStatus("Reading local files...", true);
   updateSummary();
   releaseResultUrls(results);
+  releaseOverviewUrls(reportOverviewImages);
   results = [];
+  reportOverviewImages = {};
   mapStatuses = {};
   renderResults();
   try {
-    const items = await expandUploads(files);
+    const upload = await expandUploads(files);
+    const items = upload.items;
+    reportOverviewImages = makeOverviewUrls(upload.overviewImages);
     if (!items.length) {
       setStatus("No .plux files found in the loaded files.");
       return;
@@ -1068,6 +1110,7 @@ function buildReportHtml() {
     ["FFT denoise %", options.fftDenoiseStrength],
   ];
   const hasImages = results.some((r) => r.sampleImageUrl);
+  const hasOverview = Boolean(reportOverviewImages.raw || reportOverviewImages.labelled);
   return `<!doctype html><html><head><meta charset="utf-8" />
     <title>PLUX Surface Analysis Report</title>
     <style>
@@ -1080,9 +1123,13 @@ function buildReportHtml() {
       th, td { border-bottom: 1px solid #d8e0e8; padding: 5px 6px; text-align: right; }
       th:first-child, td:first-child { text-align: left; }
       .cover { padding: 9mm 10mm 4mm; }
+      .cover.withOverview { min-height: 203mm; page-break-after: always; }
       .setup { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 12px; margin-top: 8px; max-width: none; }
       .setup div { border-bottom: 1px solid #d8e0e8; padding: 3px 0; }
       .setup b { display: block; color: #536174; font-size: 9px; text-transform: uppercase; letter-spacing: .03em; }
+      .overviewPlots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0 10px; }
+      .overviewPlots figure img { height: 118mm; }
+      .overviewPlots figcaption { min-height: 0; }
       .sample { break-inside: avoid; page-break-after: always; padding: 7mm 8mm 5mm; min-height: 186mm; }
       .sample:last-child { page-break-after: auto; }
       .sampleHeader { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; border-bottom: 2px solid #e1e8f0; padding-bottom: 5px; margin-bottom: 6px; }
@@ -1108,14 +1155,26 @@ function buildReportHtml() {
       @page { size: A4 landscape; margin: 0; }
       @media print { body { margin: 0; } }
     </style></head><body>
-    <section class="cover">
+    <section class="cover ${hasOverview ? "withOverview" : ""}">
       <h1>PLUX Surface Analysis Report</h1>
       <p>Generated ${escapeHtml(generated)}. ${results.length} PLUX files processed. Average height step ${fmt(averageStep)} um.</p>
+      ${reportOverviewHtml()}
       <h2>Setup Parameters</h2>
       <div class="setup">${optionRows.map(([k, v]) => `<div><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")}</div>
     </section>
     ${results.map(reportSampleHtml).join("")}
   </body></html>`;
+}
+
+function reportOverviewHtml() {
+  const plots = [];
+  if (reportOverviewImages.raw) {
+    plots.push(reportPlotHtml(`Inspection samples ID - raw<br>${escapeHtml(reportOverviewImages.raw.name)}`, reportOverviewImages.raw.url));
+  }
+  if (reportOverviewImages.labelled) {
+    plots.push(reportPlotHtml(`Inspection samples ID - labelled P00xx<br>${escapeHtml(reportOverviewImages.labelled.name)}`, reportOverviewImages.labelled.url));
+  }
+  return plots.length ? `<div class="overviewPlots">${plots.join("")}</div>` : "";
 }
 
 function reportSampleHtml(r, idx) {
