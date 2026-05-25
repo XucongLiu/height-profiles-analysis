@@ -1071,49 +1071,103 @@ function buildReportHtml() {
   return `<!doctype html><html><head><meta charset="utf-8" />
     <title>PLUX Surface Analysis Report</title>
     <style>
-      body { font-family: Arial, sans-serif; color: #17202a; margin: 24px; }
-      h1 { margin: 0 0 4px; font-size: 24px; }
-      h2 { margin: 20px 0 8px; font-size: 17px; break-after: avoid; }
-      p { color: #536174; margin: 4px 0 10px; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 12px; }
-      th, td { border-bottom: 1px solid #d8e0e8; padding: 6px 7px; text-align: right; }
+      * { box-sizing: border-box; }
+      body { font-family: Arial, sans-serif; color: #17202a; margin: 0; font-size: 11px; }
+      h1 { margin: 0 0 3px; font-size: 22px; }
+      h2 { margin: 0; font-size: 16px; break-after: avoid; }
+      p { color: #536174; margin: 3px 0 6px; line-height: 1.35; }
+      table { width: 100%; border-collapse: collapse; font-size: 10.5px; margin: 7px 0 0; }
+      th, td { border-bottom: 1px solid #d8e0e8; padding: 5px 6px; text-align: right; }
       th:first-child, td:first-child { text-align: left; }
-      .setup { max-width: 780px; }
-      .sample { break-inside: avoid; page-break-inside: avoid; margin-top: 16px; }
-      .plots { display: grid; grid-template-columns: repeat(${hasImages ? 5 : 4}, minmax(0, 1fr)); gap: 7px; align-items: start; }
-      figure { margin: 0; border: 1px solid #d8e0e8; border-radius: 4px; overflow: hidden; }
-      figure img { display: block; width: 100%; height: auto; }
-      figcaption { font-size: 10px; padding: 5px; color: #536174; border-top: 1px solid #d8e0e8; }
-      @page { size: A4 landscape; margin: 10mm; }
+      .cover { padding: 9mm 10mm 4mm; }
+      .setup { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 12px; margin-top: 8px; max-width: none; }
+      .setup div { border-bottom: 1px solid #d8e0e8; padding: 3px 0; }
+      .setup b { display: block; color: #536174; font-size: 9px; text-transform: uppercase; letter-spacing: .03em; }
+      .sample { break-inside: avoid; page-break-after: always; padding: 7mm 8mm 5mm; min-height: 186mm; }
+      .sample:last-child { page-break-after: auto; }
+      .sampleHeader { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; border-bottom: 2px solid #e1e8f0; padding-bottom: 5px; margin-bottom: 6px; }
+      .stepValue { color: #06732f; font-weight: 700; font-size: 14px; white-space: nowrap; }
+      .plots { display: grid; grid-template-columns: repeat(${hasImages ? 5 : 4}, minmax(0, 1fr)); gap: 7px; align-items: stretch; }
+      figure { margin: 0; border: 1px solid #d8e0e8; border-radius: 4px; overflow: hidden; background: #f8fafc; display: flex; flex-direction: column; min-width: 0; }
+      figure img { display: block; width: 100%; height: 106px; object-fit: contain; background: #eef3f8; }
+      figcaption { font-size: 9.5px; padding: 5px 6px; color: #536174; border-top: 1px solid #d8e0e8; line-height: 1.25; min-height: 36px; }
+      .colorScale { padding: 5px 6px 0; }
+      .colorBar { height: 9px; border-radius: 2px; background: linear-gradient(90deg, #440154, #31688e, #35b779, #fde725, #f89540, #b40426); }
+      .scaleTicks { display: flex; justify-content: space-between; gap: 6px; color: #536174; font-size: 8.5px; padding-top: 3px; }
+      .legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 7px; margin-top: 5px; color: #536174; font-size: 8.5px; }
+      .legend span { display: flex; align-items: center; gap: 4px; }
+      .swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; border: 1px solid rgba(0,0,0,.08); }
+      .basinCore { background: #0539d9; }
+      .basinAssigned { background: #5c7ed6; }
+      .landCore { background: #08aa32; }
+      .landAssigned { background: #69c85c; }
+      .excluded { background: #f2a020; }
+      .invalid { background: #111; }
+      .basinContour { background: #2fd7df; }
+      .landContour { background: #fff; }
+      @page { size: A4 landscape; margin: 0; }
       @media print { body { margin: 0; } }
     </style></head><body>
-    <h1>PLUX Surface Analysis Report</h1>
-    <p>Generated ${escapeHtml(generated)}. ${results.length} PLUX files processed. Average height step ${fmt(averageStep)} um.</p>
-    <h2>Setup Parameters</h2>
-    <table class="setup"><tbody>${optionRows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`).join("")}</tbody></table>
+    <section class="cover">
+      <h1>PLUX Surface Analysis Report</h1>
+      <p>Generated ${escapeHtml(generated)}. ${results.length} PLUX files processed. Average height step ${fmt(averageStep)} um.</p>
+      <h2>Setup Parameters</h2>
+      <div class="setup">${optionRows.map(([k, v]) => `<div><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")}</div>
+    </section>
     ${results.map(reportSampleHtml).join("")}
   </body></html>`;
 }
 
 function reportSampleHtml(r, idx) {
-  const plots = [];
-  if (r.sampleImageUrl) plots.push(["Sample image", r.sampleImageUrl]);
-  plots.push(["Raw height", (r.rawHeatmap || r.heatmap).url]);
-  plots.push(["Detrended", (r.detrendedHeatmap || r.heatmap).url]);
-  plots.push(["Detrended + interpolated", (r.interpolatedHeatmap || r.heatmap).url]);
-  plots.push(["Measurement mask", r.maskUrl]);
+  const start = r.sampleImageUrl ? 2 : 1;
   return `<section class="sample">
-    <h2>${idx + 1}. ${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
-    <p>${r.width} x ${r.height} px, measured ${(r.measuredFraction * 100).toFixed(1)}%, segmentation ${escapeHtml(r.segmentationMode)}, height step ${fmt(r.heightDifference)} um.</p>
-    <div class="plots">${plots.map(([caption, src]) => `<figure><img src="${src}" /><figcaption>${escapeHtml(caption)}</figcaption></figure>`).join("")}</div>
+    <div class="sampleHeader">
+      <div>
+        <h2>${idx + 1}. ${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
+        <p>${reportSampleMeta(r)}</p>
+      </div>
+      <div class="stepValue">${fmt(r.heightDifference)} um step</div>
+    </div>
+    <div class="plots">
+      ${r.sampleImageUrl ? reportPlotHtml(escapeHtml("1. Raw sample image - " + (r.sampleImageName || "")), r.sampleImageUrl) : ""}
+      ${reportPlotHtml(escapeHtml(`${start}. Raw height map - original measured pixels, no detrend, no interpolation`), (r.rawHeatmap || r.heatmap).url, r.rawHeatmap || r.heatmap)}
+      ${reportPlotHtml(escapeHtml(`${start + 1}. Detrended height map - measured pixels only, no interpolation`), (r.detrendedHeatmap || r.heatmap).url, r.detrendedHeatmap || r.heatmap)}
+      ${reportPlotHtml(escapeHtml(`${start + 2}. Detrended + interpolated height map - cyan basin outline, white land outline`), (r.interpolatedHeatmap || r.heatmap).url, r.interpolatedHeatmap || r.heatmap)}
+      ${reportPlotHtml(`${escapeHtml(`${start + 3}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px`)}${reportLegendHtml()}`, r.maskUrl)}
+    </div>
     <table>
-      <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th></tr></thead>
+      <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th><th>Area px</th><th>Polygons</th></tr></thead>
       <tbody>
-        <tr><td>Lower basin</td><td>${fmt(r.low.mean)}</td><td>${fmt(r.low.Sa)}</td><td>${fmt(r.low.Sq)}</td><td>${fmt(r.low.Sz)}</td><td>${r.low.points.toLocaleString()}</td><td>${fmt(r.lowArea?.percent)}</td></tr>
-        <tr><td>Higher land</td><td>${fmt(r.high.mean)}</td><td>${fmt(r.high.Sa)}</td><td>${fmt(r.high.Sq)}</td><td>${fmt(r.high.Sz)}</td><td>${r.high.points.toLocaleString()}</td><td>${fmt(r.highArea?.percent)}</td></tr>
+        <tr><td>Lower basin</td><td>${fmt(r.low.mean)}</td><td>${fmt(r.low.Sa)}</td><td>${fmt(r.low.Sq)}</td><td>${fmt(r.low.Sz)}</td><td>${r.low.points.toLocaleString()}</td><td>${fmt(r.lowArea?.percent)}</td><td>${(r.lowArea?.pixels || 0).toLocaleString()}</td><td>${(r.lowArea?.components?.length || 0).toLocaleString()}</td></tr>
+        <tr><td>Higher land</td><td>${fmt(r.high.mean)}</td><td>${fmt(r.high.Sa)}</td><td>${fmt(r.high.Sq)}</td><td>${fmt(r.high.Sz)}</td><td>${r.high.points.toLocaleString()}</td><td>${fmt(r.highArea?.percent)}</td><td>${(r.highArea?.pixels || 0).toLocaleString()}</td><td>${(r.highArea?.components?.length || 0).toLocaleString()}</td></tr>
       </tbody>
     </table>
   </section>`;
+}
+
+function reportSampleMeta(r) {
+  return `${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${escapeHtml(r.levelMode)} - segmentation ${escapeHtml(r.segmentationMode)} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px - edge sigma ${fmt(r.edgeSigmaPx, 1)} px - ridge offset ${fmt(r.ridgeOffsetPx, 0)} px - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um`;
+}
+
+function reportPlotHtml(caption, src, heatmap = null) {
+  return `<figure><img src="${escapeHtml(src)}" />${heatmap ? reportColorScale(heatmap) : ""}<figcaption>${caption}</figcaption></figure>`;
+}
+
+function reportColorScale(heatmap) {
+  return `<div class="colorScale"><div class="colorBar"></div><div class="scaleTicks"><span>${fmt(heatmap.low)} um</span><span>${escapeHtml(heatmap.zeroLabel || "0 um land mean")}</span><span>${fmt(heatmap.high)} um</span></div></div>`;
+}
+
+function reportLegendHtml() {
+  return `<span class="legend">
+    <span><i class="swatch basinCore"></i>Basin region, measured</span>
+    <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
+    <span><i class="swatch landCore"></i>Land region, measured</span>
+    <span><i class="swatch landAssigned"></i>Initial land pixels cleaned out</span>
+    <span><i class="swatch excluded"></i>Transition or other cluster</span>
+    <span><i class="swatch invalid"></i>Invalid or unmeasured</span>
+    <span><i class="swatch basinContour"></i>Cyan basin region outline</span>
+    <span><i class="swatch landContour"></i>White land region outline</span>
+  </span>`;
 }
 
 renderShell();
