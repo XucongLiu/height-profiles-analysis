@@ -28,7 +28,7 @@ Then open:
 http://127.0.0.1:4173
 ```
 
-The app runs locally in the browser. Upload `.plux` files, a folder containing `.plux` files, or a `.zip` containing multiple `.plux` files.
+The app runs locally in the browser. Load `.plux` files, a folder containing `.plux` files, or a `.zip` containing multiple `.plux` files.
 
 ## First-Time Install on Another Windows Computer
 

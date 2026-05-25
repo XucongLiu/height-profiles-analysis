@@ -92,8 +92,8 @@ function renderShell() {
         <div class="uploadZone">
           <span class="bigIcon">${icon("upload")}</span>
           <div>
-            <strong>Upload PLUX data</strong>
-            <span>Choose a folder containing .plux files or a .zip containing multiple .plux files.</span>
+            <strong>Load PLUX data locally</strong>
+            <span>Choose local .plux files, a folder containing .plux files, or a .zip containing multiple .plux files.</span>
           </div>
           <div class="uploadActions">
             <button id="folderBtn">${icon("folder")}Folder</button>
@@ -134,7 +134,7 @@ function renderShell() {
       <section class="statusLine"><span class="dot"></span><span id="status">Ready</span><strong id="summary"></strong></section>
       <section id="content" class="empty">
         <h2>No measurements loaded</h2>
-        <p>The table will show each detrended height map, cluster mask, and plateau statistics after upload.</p>
+        <p>The table will show each detrended height map, cluster mask, and plateau statistics after loading local files.</p>
       </section>
     </main>
   `;
@@ -805,7 +805,7 @@ async function rerunSingleResult(resultIndex) {
     const items = await expandUploads(lastUploadFiles);
     const sourceName = current.sourceName || current.name;
     const item = items.find((candidate) => candidate.name === sourceName || candidate.name === current.name);
-    if (!item) throw new Error(`Could not find the uploaded source for ${current.name}. Upload the file again, then rerun.`);
+    if (!item) throw new Error(`Could not find the local source for ${current.name}. Load the file again, then rerun.`);
     const updated = await analyzeSingleItem(item, localOptions);
     updated.sourceName = item.name;
     releaseResultUrls([results[resultIndex]]);
@@ -833,7 +833,7 @@ async function processFiles(files) {
   readOptions();
   if (!files.length) return;
   isAnalyzing = true;
-  setStatus("Reading uploads...", true);
+  setStatus("Reading local files...", true);
   updateSummary();
   releaseResultUrls(results);
   results = [];
@@ -842,7 +842,7 @@ async function processFiles(files) {
   try {
     const items = await expandUploads(files);
     if (!items.length) {
-      setStatus("No .plux files found in the upload.");
+      setStatus("No .plux files found in the loaded files.");
       return;
     }
     results = await analyzeWithWorkers(items, options);
@@ -881,7 +881,7 @@ function renderResults() {
   const content = document.getElementById("content");
   if (!results.length) {
     content.className = "empty";
-    content.innerHTML = `<h2>No measurements loaded</h2><p>The table will show each detrended height map, cluster mask, and plateau statistics after upload.</p>`;
+    content.innerHTML = `<h2>No measurements loaded</h2><p>The table will show each detrended height map, cluster mask, and plateau statistics after loading local files.</p>`;
     updateSummary();
     return;
   }

@@ -18,7 +18,7 @@ http://127.0.0.1:4173
 
 ## What It Does
 
-- Upload a folder of `.plux` files or a `.zip` containing `.plux` files.
+- Load a folder of `.plux` files or a `.zip` containing `.plux` files.
 - Extract `index.xml` and `LAYER_0.raw` in the browser.
 - Fit and remove a best-fit plane from each height map. By default, the plane is fitted from the higher-land plateau only.
 - Render a detrended rainbow height map with the higher-land mean height set to `0 um`.
