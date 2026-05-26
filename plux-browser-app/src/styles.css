@@ -285,6 +285,31 @@ p {
   margin: 3px 0;
 }
 
+.recognitionDebug {
+  margin: -2px 0 14px;
+  border: 1px solid #d8e0e8;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.recognitionDebug summary {
+  cursor: pointer;
+  color: #3b4756;
+  font-weight: 620;
+  padding: 9px 12px;
+}
+
+.debugImages {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+
+.debugImages img {
+  background: #ffffff;
+}
+
 .result {
   padding: 16px;
 }

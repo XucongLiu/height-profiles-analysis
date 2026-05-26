@@ -500,6 +500,7 @@ async function recognizeSampleImage(blob, sourceName = "") {
         notes: "The washer annulus could not be isolated reliably in the local sample image.",
       };
     }
+    const debugImages = makeRecognitionDebugImages(canvas, cx, cy, innerR, outerR);
 
     const thetaBins = 360;
     const angularDark = new Float32Array(thetaBins);
@@ -613,7 +614,10 @@ async function recognizeSampleImage(blob, sourceName = "") {
         radialRatio,
         tangentialRatio,
         diagonalBalance,
+        innerRadiusPx: innerR,
+        outerRadiusPx: outerR,
       },
+      debugImages,
       notes,
     };
   } catch (error) {
@@ -623,6 +627,95 @@ async function recognizeSampleImage(blob, sourceName = "") {
       notes: `Image recognition failed: ${error.message || error}`,
     };
   }
+}
+
+function makeRecognitionDebugImages(sourceCanvas, cx, cy, innerR, outerR) {
+  const src = sourceCanvas.getContext("2d");
+  const source = src.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+  const normalizedSize = 640;
+  const normalized = document.createElement("canvas");
+  normalized.width = normalizedSize;
+  normalized.height = normalizedSize;
+  const nctx = normalized.getContext("2d");
+  nctx.fillStyle = "#ffffff";
+  nctx.fillRect(0, 0, normalizedSize, normalizedSize);
+  const nimg = nctx.createImageData(normalizedSize, normalizedSize);
+  const targetOuter = normalizedSize * 0.44;
+  const targetInner = targetOuter / SAMPLE_OUTER_TO_INNER_RADIUS;
+  const scale = targetOuter / outerR;
+  for (let y = 0; y < normalizedSize; y++) {
+    for (let x = 0; x < normalizedSize; x++) {
+      const dx = x - normalizedSize / 2;
+      const dy = y - normalizedSize / 2;
+      const r = Math.hypot(dx, dy);
+      const p = (y * normalizedSize + x) * 4;
+      if (r > targetOuter * 1.02) {
+        nimg.data[p] = 255; nimg.data[p + 1] = 255; nimg.data[p + 2] = 255; nimg.data[p + 3] = 255;
+        continue;
+      }
+      const sx = Math.round(cx + dx / scale);
+      const sy = Math.round(cy + dy / scale);
+      if (sx < 0 || sy < 0 || sx >= sourceCanvas.width || sy >= sourceCanvas.height) {
+        nimg.data[p] = 255; nimg.data[p + 1] = 255; nimg.data[p + 2] = 255; nimg.data[p + 3] = 255;
+        continue;
+      }
+      const sp = (sy * sourceCanvas.width + sx) * 4;
+      nimg.data[p] = source.data[sp];
+      nimg.data[p + 1] = source.data[sp + 1];
+      nimg.data[p + 2] = source.data[sp + 2];
+      nimg.data[p + 3] = 255;
+    }
+  }
+  nctx.putImageData(nimg, 0, 0);
+  nctx.strokeStyle = "#d71920";
+  nctx.lineWidth = 4;
+  nctx.beginPath();
+  nctx.arc(normalizedSize / 2, normalizedSize / 2, targetOuter, 0, Math.PI * 2);
+  nctx.stroke();
+  nctx.strokeStyle = "#00cfe8";
+  nctx.beginPath();
+  nctx.arc(normalizedSize / 2, normalizedSize / 2, targetInner, 0, Math.PI * 2);
+  nctx.stroke();
+
+  const clean = document.createElement("canvas");
+  clean.width = normalizedSize;
+  clean.height = normalizedSize;
+  const cctx = clean.getContext("2d");
+  cctx.fillStyle = "#ffffff";
+  cctx.fillRect(0, 0, normalizedSize, normalizedSize);
+  cctx.putImageData(nimg, 0, 0);
+
+  const unwrapW = 720;
+  const unwrapH = 180;
+  const unwrap = document.createElement("canvas");
+  unwrap.width = unwrapW;
+  unwrap.height = unwrapH;
+  const uctx = unwrap.getContext("2d");
+  const uimg = uctx.createImageData(unwrapW, unwrapH);
+  for (let y = 0; y < unwrapH; y++) {
+    const rr = innerR * 1.12 + (outerR * 0.98 - innerR * 1.12) * (y / Math.max(1, unwrapH - 1));
+    for (let x = 0; x < unwrapW; x++) {
+      const theta = -Math.PI + (Math.PI * 2 * x) / unwrapW;
+      const sx = Math.round(cx + rr * Math.cos(theta));
+      const sy = Math.round(cy + rr * Math.sin(theta));
+      const p = (y * unwrapW + x) * 4;
+      if (sx < 0 || sy < 0 || sx >= sourceCanvas.width || sy >= sourceCanvas.height) {
+        uimg.data[p] = 255; uimg.data[p + 1] = 255; uimg.data[p + 2] = 255; uimg.data[p + 3] = 255;
+        continue;
+      }
+      const sp = (sy * sourceCanvas.width + sx) * 4;
+      uimg.data[p] = source.data[sp];
+      uimg.data[p + 1] = source.data[sp + 1];
+      uimg.data[p + 2] = source.data[sp + 2];
+      uimg.data[p + 3] = 255;
+    }
+  }
+  uctx.putImageData(uimg, 0, 0);
+  return {
+    normalizedUrl: normalized.toDataURL("image/jpeg", 0.9),
+    isolatedUrl: clean.toDataURL("image/jpeg", 0.9),
+    unwrapUrl: unwrap.toDataURL("image/jpeg", 0.9),
+  };
 }
 
 function smoothCircular(values, radius) {
@@ -1248,32 +1341,32 @@ function renderResults() {
           ${mapStatusMarkup(idx)}
         </div>
       </header>
-      <div class="visuals ${r.sampleImageUrl ? "withSampleImage" : ""}">
-        ${r.sampleImageUrl ? `
+      <div class="visuals ${sampleDisplayUrl(r) ? "withSampleImage" : ""}">
+        ${sampleDisplayUrl(r) ? `
         <figure>
-          <img src="${r.sampleImageUrl}" alt="Raw sample photo ${idx + 1}" />
-          <figcaption>1. Raw sample image - ${escapeHtml(r.sampleImageName || "")}</figcaption>
+          <img src="${sampleDisplayUrl(r)}" alt="Isolated sample photo ${idx + 1}" />
+          <figcaption>1. ${escapeHtml(sampleDisplayCaption(r))}</figcaption>
         </figure>
         ` : ""}
         <figure>
           <img src="${(r.rawHeatmap || r.heatmap).url}" alt="Raw height map ${idx + 1}" />
           ${colorScale(r.rawHeatmap || r.heatmap)}
-          <figcaption>${r.sampleImageUrl ? "2" : "1"}. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
+          <figcaption>${sampleDisplayUrl(r) ? "2" : "1"}. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.detrendedHeatmap || r.heatmap).url}" alt="Detrended measured height map ${idx + 1}" />
           ${colorScale(r.detrendedHeatmap || r.heatmap)}
-          <figcaption>${r.sampleImageUrl ? "3" : "2"}. Detrended height map - measured pixels only, no interpolation</figcaption>
+          <figcaption>${sampleDisplayUrl(r) ? "3" : "2"}. Detrended height map - measured pixels only, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.interpolatedHeatmap || r.heatmap).url}" alt="Detrended and interpolated height map ${idx + 1}" />
           ${colorScale(r.interpolatedHeatmap || r.heatmap)}
-          <figcaption>${r.sampleImageUrl ? "4" : "3"}. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
+          <figcaption>${sampleDisplayUrl(r) ? "4" : "3"}. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>${r.sampleImageUrl ? "5" : "4"}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
+            <span>${sampleDisplayUrl(r) ? "5" : "4"}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin region, measured</span>
               <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
@@ -1287,6 +1380,7 @@ function renderResults() {
           </figcaption>
         </figure>
       </div>
+      ${recognitionDebugHtml(r)}
       <table>
         <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th><th>Area px</th><th>Polygons</th></tr></thead>
         <tbody>
@@ -1367,6 +1461,35 @@ function recognitionSummaryHtml() {
   </section>`;
 }
 
+function sampleDisplayUrl(row) {
+  return row?.recognition?.debugImages?.isolatedUrl || row?.sampleImageUrl || "";
+}
+
+function sampleDisplayCaption(row) {
+  if (row?.recognition?.debugImages?.isolatedUrl) {
+    return `Isolated normalized sample image - ${row.sampleImageName || ""}`;
+  }
+  return `Raw sample image - ${row?.sampleImageName || ""}`;
+}
+
+function recognitionDebugHtml(row) {
+  const debug = row?.recognition?.debugImages;
+  if (!debug) return "";
+  return `<details class="recognitionDebug">
+    <summary>Recognition debug images</summary>
+    <div class="debugImages">
+      <figure>
+        <img src="${debug.normalizedUrl}" alt="Circle-normalized sample" />
+        <figcaption>Circle-normalized crop with outer and inner annulus guides</figcaption>
+      </figure>
+      <figure>
+        <img src="${debug.unwrapUrl}" alt="Unwrapped annular texture band" />
+        <figcaption>Unwrapped annular texture band used for recognition diagnostics</figcaption>
+      </figure>
+    </div>
+  </details>`;
+}
+
 function exportPdfReport() {
   if (!results.length) return;
   const report = window.open("", "_blank");
@@ -1396,7 +1519,7 @@ function buildReportHtml() {
     ["Minimum region %", options.minRegionPercent],
     ["FFT denoise %", options.fftDenoiseStrength],
   ];
-  const hasImages = results.some((r) => r.sampleImageUrl);
+  const hasImages = results.some((r) => sampleDisplayUrl(r));
   const hasOverview = Boolean(reportOverviewImages.raw || reportOverviewImages.labelled);
   return `<!doctype html><html><head><meta charset="utf-8" />
     <title>PLUX Surface Analysis Report</title>
@@ -1493,7 +1616,8 @@ function reportOverviewHtml() {
 }
 
 function reportSampleHtml(r, idx) {
-  const start = r.sampleImageUrl ? 2 : 1;
+  const sampleUrl = sampleDisplayUrl(r);
+  const start = sampleUrl ? 2 : 1;
   const recognition = recognitionForRow(r);
   return `<section class="sample">
     <div class="sampleHeader">
@@ -1505,7 +1629,7 @@ function reportSampleHtml(r, idx) {
       <div class="stepValue">${fmt(r.heightDifference)} um step</div>
     </div>
     <div class="plots">
-      ${r.sampleImageUrl ? reportPlotHtml(escapeHtml("1. Raw sample image - " + (r.sampleImageName || "")), r.sampleImageUrl) : ""}
+      ${sampleUrl ? reportPlotHtml(escapeHtml("1. " + sampleDisplayCaption(r)), sampleUrl) : ""}
       ${reportPlotHtml(escapeHtml(`${start}. Raw height map - original measured pixels, no detrend, no interpolation`), (r.rawHeatmap || r.heatmap).url, r.rawHeatmap || r.heatmap)}
       ${reportPlotHtml(escapeHtml(`${start + 1}. Detrended height map - measured pixels only, no interpolation`), (r.detrendedHeatmap || r.heatmap).url, r.detrendedHeatmap || r.heatmap)}
       ${reportPlotHtml(escapeHtml(`${start + 2}. Detrended + interpolated height map - cyan basin outline, white land outline`), (r.interpolatedHeatmap || r.heatmap).url, r.interpolatedHeatmap || r.heatmap)}
