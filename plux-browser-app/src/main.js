@@ -23,6 +23,7 @@ const UNKNOWN_RECOGNITION = {
   confidence: 0,
   notes: "No sample image was available for local image recognition.",
 };
+const SAMPLE_OUTER_TO_INNER_RADIUS = 31.7 / 15.5;
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -489,7 +490,9 @@ async function recognizeSampleImage(blob, sourceName = "") {
       }
     }
     const innerR = Math.max(size * 0.09, percentile(blueDistances, 92));
-    const outerR = Math.min(size * 0.47, Math.max(innerR * 2.35, percentile(metalDistances, 96)));
+    const physicalOuterR = innerR * SAMPLE_OUTER_TO_INNER_RADIUS;
+    const imageLimitedOuterR = size * 0.47;
+    const outerR = Math.min(imageLimitedOuterR, physicalOuterR);
     if (!Number.isFinite(innerR) || !Number.isFinite(outerR) || outerR <= innerR * 1.6) {
       return {
         ...UNKNOWN_RECOGNITION,
@@ -567,7 +570,7 @@ async function recognizeSampleImage(blob, sourceName = "") {
     let family = "Rectangular pockets";
     let variant = "V2";
     let confidence = 0.48;
-    let notes = `Detected ${peakCount} repeated angular texture peaks after isolating the central annular texture band.`;
+    let notes = `Detected ${peakCount} repeated angular texture peaks after isolating the central annular texture band using the 31.7/15.5 mm outer/inner diameter ratio.`;
     const manyCircumferentialRepeats = peakCount >= 18;
     if (manyCircumferentialRepeats && (radialRatio + tangentialRatio) >= diagonalRatio * 0.72) {
       family = "Rectangular pockets";
