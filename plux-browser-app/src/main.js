@@ -609,11 +609,6 @@ async function recognizeSampleImage(blob, sourceName = "") {
       variant = diagonalRatio < 0.49 ? "V1" : diagonalRatio < 0.57 ? "V2" : "V3";
       confidence = 0.55 + Math.min(0.25, diagonalRatio * 0.3 + (1 - diagonalBalance) * 0.1);
       notes += " One dominant diagonal edge family suggests spiral grooves.";
-    } else if (tangentialRatio > radialRatio * 1.25 && peakCount <= 24) {
-      family = "Staircase pockets";
-      variant = peakCount < 7 ? "V1" : peakCount < 13 ? "V2" : "V3";
-      confidence = 0.52 + Math.min(0.2, tangentialRatio * 0.24);
-      notes += " Coarse banded/tangential structure suggests staircase pockets.";
     } else {
       family = "Rectangular pockets";
       variant = peakCount < 45 ? "V1" : peakCount < 90 ? "V2" : "V3";
@@ -760,7 +755,6 @@ async function recognizeTexture(row, sampleBlob = null) {
 function textureVariantDescription(family, variant) {
   const table = {
     "Rectangular pockets": { V1: "coarse / 30 pockets", V2: "medium / 60 pockets", V3: "dense / 120 pockets" },
-    "Staircase pockets": { V1: "coarse / 4 pockets", V2: "medium / 8 pockets", V3: "dense / 16 pockets" },
     "Logarithmic spiral grooves": { V1: "blunt / 50.28 deg", V2: "medium / 58.08 deg", V3: "sharp / 63.51 deg" },
     "Chevron pockets": { V1: "coarse / 60 deg", V2: "medium / 90 deg", V3: "dense / 120 deg" },
   };
@@ -1362,32 +1356,32 @@ function renderResults() {
           ${mapStatusMarkup(idx)}
         </div>
       </header>
-      <div class="visuals ${sampleDisplayUrl(r) ? "withSampleImage" : ""}">
-        ${sampleDisplayUrl(r) ? `
+      <div class="visuals ${r.sampleImageUrl ? "withSampleImage" : ""}">
+        ${r.sampleImageUrl ? `
         <figure>
-          <img src="${sampleDisplayUrl(r)}" alt="Isolated sample photo ${idx + 1}" />
-          <figcaption>1. ${escapeHtml(sampleDisplayCaption(r))}</figcaption>
+          <img src="${r.sampleImageUrl}" alt="Raw sample photo ${idx + 1}" />
+          <figcaption>1. Raw sample image - ${escapeHtml(r.sampleImageName || "")}</figcaption>
         </figure>
         ` : ""}
         <figure>
           <img src="${(r.rawHeatmap || r.heatmap).url}" alt="Raw height map ${idx + 1}" />
           ${colorScale(r.rawHeatmap || r.heatmap)}
-          <figcaption>${sampleDisplayUrl(r) ? "2" : "1"}. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
+          <figcaption>${r.sampleImageUrl ? "2" : "1"}. Raw height map - original measured pixels, no detrend, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.detrendedHeatmap || r.heatmap).url}" alt="Detrended measured height map ${idx + 1}" />
           ${colorScale(r.detrendedHeatmap || r.heatmap)}
-          <figcaption>${sampleDisplayUrl(r) ? "3" : "2"}. Detrended height map - measured pixels only, no interpolation</figcaption>
+          <figcaption>${r.sampleImageUrl ? "3" : "2"}. Detrended height map - measured pixels only, no interpolation</figcaption>
         </figure>
         <figure>
           <img src="${(r.interpolatedHeatmap || r.heatmap).url}" alt="Detrended and interpolated height map ${idx + 1}" />
           ${colorScale(r.interpolatedHeatmap || r.heatmap)}
-          <figcaption>${sampleDisplayUrl(r) ? "4" : "3"}. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
+          <figcaption>${r.sampleImageUrl ? "4" : "3"}. Detrended + interpolated height map - cyan basin outline, white land outline</figcaption>
         </figure>
         <figure>
           <img src="${r.maskUrl}" alt="Cluster mask ${idx + 1}" />
           <figcaption>
-            <span>${sampleDisplayUrl(r) ? "5" : "4"}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
+            <span>${r.sampleImageUrl ? "5" : "4"}. Measurement mask - ${r.segmentationMode}, boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px</span>
             <span class="legend">
               <span><i class="swatch basinCore"></i>Basin region, measured</span>
               <span><i class="swatch basinAssigned"></i>Initial basin pixels cleaned out</span>
@@ -1401,7 +1395,6 @@ function renderResults() {
           </figcaption>
         </figure>
       </div>
-      ${recognitionDebugHtml(r)}
       <table>
         <thead><tr><th>Region</th><th>Mean um</th><th>Sa um</th><th>Sq um</th><th>Sz um</th><th>Points</th><th>Area %</th><th>Area px</th><th>Polygons</th></tr></thead>
         <tbody>
@@ -1472,7 +1465,7 @@ function recognitionSummaryHtml() {
         const rec = recognitionForRow(r);
         return `<tr>
           <td>${escapeHtml(rec.inspectionId || "-")}</td>
-          <td>${escapeHtml(rec.displayName)}</td>
+          <td>${recognitionHoverCell(rec)}</td>
           <td>${escapeHtml(rec.family)}</td>
           <td>${escapeHtml(rec.variant || "-")}</td>
           <td>${fmt(r.heightDifference)}</td>
@@ -1484,33 +1477,16 @@ function recognitionSummaryHtml() {
   </section>`;
 }
 
-function sampleDisplayUrl(row) {
-  return row?.recognition?.debugImages?.isolatedUrl || row?.sampleImageUrl || "";
-}
-
-function sampleDisplayCaption(row) {
-  if (row?.recognition?.debugImages?.isolatedUrl) {
-    return `Isolated normalized sample image - ${row.sampleImageName || ""}`;
-  }
-  return `Raw sample image - ${row?.sampleImageName || ""}`;
-}
-
-function recognitionDebugHtml(row) {
-  const debug = row?.recognition?.debugImages;
-  if (!debug) return "";
-  return `<details class="recognitionDebug">
-    <summary>Recognition debug images</summary>
-    <div class="debugImages">
-      <figure>
-        <img src="${debug.normalizedUrl}" alt="Circle-normalized sample" />
-        <figcaption>Circle-normalized crop with outer and inner annulus guides</figcaption>
-      </figure>
-      <figure>
-        <img src="${debug.unwrapUrl}" alt="Unwrapped annular texture band" />
-        <figcaption>Unwrapped annular texture band used for recognition diagnostics</figcaption>
-      </figure>
-    </div>
-  </details>`;
+function recognitionHoverCell(recognition) {
+  const debug = recognition?.debugImages;
+  if (!debug) return escapeHtml(recognition?.displayName || "");
+  return `<span class="recognitionHover">
+    ${escapeHtml(recognition.displayName)}
+    <span class="recognitionPreview" role="tooltip">
+      <span><img src="${debug.normalizedUrl}" alt="" />Circle-normalized crop</span>
+      <span><img src="${debug.unwrapUrl}" alt="" />Unwrapped annulus</span>
+    </span>
+  </span>`;
 }
 
 function exportPdfReport() {
@@ -1542,7 +1518,7 @@ function buildReportHtml() {
     ["Minimum region %", options.minRegionPercent],
     ["FFT denoise %", options.fftDenoiseStrength],
   ];
-  const hasImages = results.some((r) => sampleDisplayUrl(r));
+  const hasImages = results.some((r) => r.sampleImageUrl);
   const hasOverview = Boolean(reportOverviewImages.raw || reportOverviewImages.labelled);
   return `<!doctype html><html><head><meta charset="utf-8" />
     <title>PLUX Surface Analysis Report</title>
@@ -1639,7 +1615,7 @@ function reportOverviewHtml() {
 }
 
 function reportSampleHtml(r, idx) {
-  const sampleUrl = sampleDisplayUrl(r);
+  const sampleUrl = r.sampleImageUrl || "";
   const start = sampleUrl ? 2 : 1;
   const recognition = recognitionForRow(r);
   return `<section class="sample">
@@ -1652,7 +1628,7 @@ function reportSampleHtml(r, idx) {
       <div class="stepValue">${fmt(r.heightDifference)} um step</div>
     </div>
     <div class="plots">
-      ${sampleUrl ? reportPlotHtml(escapeHtml("1. " + sampleDisplayCaption(r)), sampleUrl) : ""}
+      ${sampleUrl ? reportPlotHtml(escapeHtml("1. Raw sample image - " + (r.sampleImageName || "")), sampleUrl) : ""}
       ${reportPlotHtml(escapeHtml(`${start}. Raw height map - original measured pixels, no detrend, no interpolation`), (r.rawHeatmap || r.heatmap).url, r.rawHeatmap || r.heatmap)}
       ${reportPlotHtml(escapeHtml(`${start + 1}. Detrended height map - measured pixels only, no interpolation`), (r.detrendedHeatmap || r.heatmap).url, r.detrendedHeatmap || r.heatmap)}
       ${reportPlotHtml(escapeHtml(`${start + 2}. Detrended + interpolated height map - cyan basin outline, white land outline`), (r.interpolatedHeatmap || r.heatmap).url, r.interpolatedHeatmap || r.heatmap)}
