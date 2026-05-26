@@ -30,7 +30,7 @@ let options = {
   clusters: 3,
   clipPercent: 1,
   edgeRadiusPx: 5,
-  segmentationMode: "spatial",
+  segmentationMode: "height",
   smoothRadiusPx: 12,
   boundaryEpsilonPx: 18,
   edgeSigmaPx: 7,
@@ -38,7 +38,7 @@ let options = {
   ridgeOffsetPx: 20,
   minRegionPercent: 1,
   fftDenoiseStrength: 35,
-  workerCount: 9,
+  workerCount: 12,
   maxSamples: 700000,
 };
 
@@ -129,9 +129,9 @@ function renderShell() {
           <label data-param="edgeRadiusPx" ${tip(tips.edgeRadiusPx)}>Edge exclusion px <input id="edgeRadiusPx" type="number" min="0" max="50" value="5" ${tip(tips.edgeRadiusPx)} /></label>
           <label ${tip(tips.segmentationMode)}>Segmentation
             <select id="segmentationMode" ${tip(tips.segmentationMode)}>
-              <option value="spatial" selected>CCA geometric regions</option>
+              <option value="spatial">CCA geometric regions</option>
               <option value="edge-polygons">Gaussian edge polygons</option>
-              <option value="height">Per-pixel height</option>
+              <option value="height" selected>Per-pixel height</option>
             </select>
           </label>
           <label data-param="smoothRadiusPx" ${tip(tips.smoothRadiusPx)}>Area smoothing px <input id="smoothRadiusPx" type="number" min="0" max="80" value="12" ${tip(tips.smoothRadiusPx)} /></label>
