@@ -14,6 +14,15 @@ let isAnalyzing = false;
 let mapStatuses = {};
 let reportOverviewImages = {};
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
+const UNKNOWN_RECOGNITION = {
+  inspectionId: "",
+  displayName: "Unrecognized texture",
+  family: "Unrecognized",
+  variant: "",
+  nominalDepth: "",
+  confidence: 0,
+  notes: "No sample image was available for local image recognition.",
+};
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -398,6 +407,187 @@ function sampleKey(name) {
   const file = String(name).split(/[\\/]/).pop() || "";
   const match = file.match(/P\d{4}/i);
   return match ? match[0].toUpperCase() : "";
+}
+
+function sampleInspectionId(row) {
+  return sampleKey(row?.name || row?.sourceName || row?.sampleImageName || "") || "";
+}
+
+function recognitionForRow(row) {
+  const fallback = {
+    ...UNKNOWN_RECOGNITION,
+    inspectionId: sampleInspectionId(row),
+  };
+  if (!row?.recognition) return fallback;
+  return {
+    ...fallback,
+    ...row.recognition,
+    inspectionId: row.recognition.inspectionId || fallback.inspectionId,
+  };
+}
+
+async function recognizeSampleImage(blob, sourceName = "") {
+  if (!blob) {
+    return { ...UNKNOWN_RECOGNITION, inspectionId: sampleKey(sourceName) };
+  }
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const size = 192;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0, size, size);
+    bitmap.close?.();
+    const data = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Float32Array(size * size);
+    const sampleMask = new Uint8Array(size * size);
+    let minX = size, minY = size, maxX = 0, maxY = 0, maskCount = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const p = (y * size + x) * 4;
+        const r = data[p], g = data[p + 1], b = data[p + 2];
+        const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+        gray[y * size + x] = brightness;
+        const blueBackground = b > 85 && b > r * 1.18 && b > g * 1.1;
+        const metalOrDarkTexture = !blueBackground && brightness > 32;
+        if (metalOrDarkTexture) {
+          const idx = y * size + x;
+          sampleMask[idx] = 1;
+          maskCount++;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    if (maskCount < size * size * 0.08) {
+      return {
+        ...UNKNOWN_RECOGNITION,
+        inspectionId: sampleKey(sourceName),
+        notes: "Sample circle was not detected clearly in the local image.",
+      };
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const outerR = Math.max(20, Math.min(maxX - minX, maxY - minY) * 0.5);
+    const innerR = outerR * 0.34;
+    const thetaBins = 180;
+    const angularDark = new Float32Array(thetaBins);
+    const angularCount = new Uint16Array(thetaBins);
+    const relHist = new Float32Array(18);
+    let edgeWeight = 0, diagonalWeight = 0, radialWeight = 0, tangentialWeight = 0;
+
+    for (let y = 1; y < size - 1; y++) {
+      for (let x = 1; x < size - 1; x++) {
+        const idx = y * size + x;
+        const dx = x - cx;
+        const dy = y - cy;
+        const rr = Math.hypot(dx, dy);
+        if (rr < innerR || rr > outerR || !sampleMask[idx]) continue;
+        const theta = Math.atan2(dy, dx);
+        const bin = Math.max(0, Math.min(thetaBins - 1, Math.floor(((theta + Math.PI) / (2 * Math.PI)) * thetaBins)));
+        angularDark[bin] += Math.max(0, 170 - gray[idx]);
+        angularCount[bin]++;
+
+        const gx = -gray[idx - size - 1] - 2 * gray[idx - 1] - gray[idx + size - 1] + gray[idx - size + 1] + 2 * gray[idx + 1] + gray[idx + size + 1];
+        const gy = -gray[idx - size - 1] - 2 * gray[idx - size] - gray[idx - size + 1] + gray[idx + size - 1] + 2 * gray[idx + size] + gray[idx + size + 1];
+        const mag = Math.hypot(gx, gy);
+        if (mag < 20) continue;
+        let edgeAngle = Math.atan2(gy, gx);
+        let rel = Math.abs(edgeAngle - theta);
+        while (rel > Math.PI) rel -= Math.PI;
+        rel = Math.abs(rel);
+        if (rel > Math.PI / 2) rel = Math.PI - rel;
+        const deg = rel * 180 / Math.PI;
+        const h = Math.max(0, Math.min(relHist.length - 1, Math.floor(deg / 5)));
+        relHist[h] += mag;
+        edgeWeight += mag;
+        if (deg < 16) radialWeight += mag;
+        else if (deg > 74) tangentialWeight += mag;
+        else diagonalWeight += mag;
+      }
+    }
+
+    for (let i = 0; i < thetaBins; i++) {
+      angularDark[i] = angularCount[i] ? angularDark[i] / angularCount[i] : 0;
+    }
+    const meanDark = angularDark.reduce((a, b) => a + b, 0) / thetaBins;
+    let peakCount = 0;
+    for (let i = 0; i < thetaBins; i++) {
+      const prev = angularDark[(i + thetaBins - 1) % thetaBins];
+      const next = angularDark[(i + 1) % thetaBins];
+      if (angularDark[i] > meanDark * 1.25 && angularDark[i] >= prev && angularDark[i] >= next) peakCount++;
+    }
+    const total = edgeWeight || 1;
+    const diagonalRatio = diagonalWeight / total;
+    const radialRatio = radialWeight / total;
+    const tangentialRatio = tangentialWeight / total;
+    const lowAngle = relHist.slice(3, 8).reduce((a, b) => a + b, 0);
+    const highAngle = relHist.slice(10, 15).reduce((a, b) => a + b, 0);
+    const diagonalBalance = Math.min(lowAngle, highAngle) / Math.max(lowAngle, highAngle, 1);
+
+    let family = "Rectangular pockets";
+    let variant = "V2";
+    let confidence = 0.48;
+    let notes = `Detected ${peakCount} repeated angular texture peaks.`;
+    if (diagonalRatio > 0.44 && diagonalBalance > 0.62) {
+      family = "Chevron pockets";
+      variant = peakCount < 52 ? "V1" : peakCount < 70 ? "V2" : "V3";
+      confidence = 0.58 + Math.min(0.25, diagonalRatio * 0.25 + diagonalBalance * 0.12);
+      notes += " Balanced diagonal edge families suggest V-shaped chevrons.";
+    } else if (diagonalRatio > 0.42 && diagonalBalance <= 0.62) {
+      family = "Logarithmic spiral grooves";
+      variant = diagonalRatio < 0.49 ? "V1" : diagonalRatio < 0.57 ? "V2" : "V3";
+      confidence = 0.55 + Math.min(0.25, diagonalRatio * 0.3 + (1 - diagonalBalance) * 0.1);
+      notes += " One dominant diagonal edge family suggests spiral grooves.";
+    } else if (tangentialRatio > radialRatio * 1.25 && peakCount <= 24) {
+      family = "Staircase pockets";
+      variant = peakCount < 7 ? "V1" : peakCount < 13 ? "V2" : "V3";
+      confidence = 0.52 + Math.min(0.2, tangentialRatio * 0.24);
+      notes += " Coarse banded/tangential structure suggests staircase pockets.";
+    } else {
+      family = "Rectangular pockets";
+      variant = peakCount < 45 ? "V1" : peakCount < 90 ? "V2" : "V3";
+      confidence = 0.50 + Math.min(0.22, (radialRatio + tangentialRatio) * 0.2);
+      notes += " Mostly radial/tangential edges suggest rectangular pockets.";
+    }
+    const variantText = textureVariantDescription(family, variant);
+    const inspectionId = sampleKey(sourceName);
+    return {
+      inspectionId,
+      displayName: `${family} ${variant}${variantText ? ` - ${variantText}` : ""}`,
+      family,
+      variant,
+      nominalDepth: "",
+      confidence: Math.max(0, Math.min(0.95, confidence)),
+      features: {
+        peakCount,
+        diagonalRatio,
+        radialRatio,
+        tangentialRatio,
+        diagonalBalance,
+      },
+      notes,
+    };
+  } catch (error) {
+    return {
+      ...UNKNOWN_RECOGNITION,
+      inspectionId: sampleKey(sourceName),
+      notes: `Image recognition failed: ${error.message || error}`,
+    };
+  }
+}
+
+function textureVariantDescription(family, variant) {
+  const table = {
+    "Rectangular pockets": { V1: "coarse / 30 pockets", V2: "medium / 60 pockets", V3: "dense / 120 pockets" },
+    "Staircase pockets": { V1: "coarse / 4 pockets", V2: "medium / 8 pockets", V3: "dense / 16 pockets" },
+    "Logarithmic spiral grooves": { V1: "blunt / 50.28 deg", V2: "medium / 58.08 deg", V3: "sharp / 63.51 deg" },
+    "Chevron pockets": { V1: "coarse / 60 deg", V2: "medium / 90 deg", V3: "dense / 120 deg" },
+  };
+  return table[family]?.[variant] || "";
 }
 
 function percentile(values, p) {
@@ -835,6 +1025,9 @@ async function analyzeWithWorkers(items, jobOptions) {
       if (item.sampleImage) {
         result.sampleImageName = item.sampleImage.name;
         result.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
+        result.recognition = await recognizeSampleImage(item.sampleImage.blob, item.name);
+      } else {
+        result.recognition = recognitionForRow(result);
       }
       completed[index] = result;
       done++;
@@ -890,6 +1083,9 @@ async function rerunSingleResult(resultIndex) {
     if (item.sampleImage) {
       updated.sampleImageName = item.sampleImage.name;
       updated.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
+      updated.recognition = await recognizeSampleImage(item.sampleImage.blob, item.name);
+    } else {
+      updated.recognition = recognitionForRow(updated);
     }
     releaseResultUrls([results[resultIndex]]);
     results[resultIndex] = updated;
@@ -973,11 +1169,14 @@ function renderResults() {
     return;
   }
   content.className = "results";
-  content.innerHTML = results.map((r, idx) => `
+  content.innerHTML = `${recognitionSummaryHtml()}${results.map((r, idx) => {
+    const recognition = recognitionForRow(r);
+    return `
     <article class="result">
       <header>
         <div>
-          <h2>${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
+          <h2>${escapeHtml(recognition.inspectionId || r.name.split(/[\\/]/).pop())} - ${escapeHtml(recognition.displayName)}</h2>
+          <p class="recognitionLine">Recognition confidence ${(recognition.confidence * 100).toFixed(0)}% - ${escapeHtml(recognition.notes || "")}</p>
           <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px - edge sigma ${fmt(r.edgeSigmaPx, 1)} px - ridge offset ${fmt(r.ridgeOffsetPx, 0)} px - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <div class="resultActions">
@@ -1037,7 +1236,7 @@ function renderResults() {
         </tbody>
       </table>
     </article>
-  `).join("");
+  `}).join("")}`;
   for (const button of content.querySelectorAll("[data-rerun]")) {
     button.onclick = () => rerunSingleResult(Number(button.dataset.rerun));
   }
@@ -1069,8 +1268,11 @@ function csvEscape(value) {
 }
 
 function exportCsv(rows) {
-  const headers = ["file", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "boundary_epsilon_px", "edge_sigma_px", "edge_percentile", "ridge_offset_px", "min_region_percent", "fft_denoise_percent", "interpolated_points", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
-  const body = rows.map((r) => [r.name, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.boundaryEpsilonPx, r.edgeSigmaPx, r.edgePercentile, r.ridgeOffsetPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective]);
+  const headers = ["file", "inspection_id", "recognized_name", "recognized_family", "recognized_variant", "recognition_confidence", "recognition_notes", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "boundary_epsilon_px", "edge_sigma_px", "edge_percentile", "ridge_offset_px", "min_region_percent", "fft_denoise_percent", "interpolated_points", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
+  const body = rows.map((r) => {
+    const rec = recognitionForRow(r);
+    return [r.name, rec.inspectionId, rec.displayName, rec.family, rec.variant, rec.confidence, rec.notes, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.boundaryEpsilonPx, r.edgeSigmaPx, r.edgePercentile, r.ridgeOffsetPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective];
+  });
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
@@ -1078,6 +1280,32 @@ function exportCsv(rows) {
   a.download = "plux_plateau_statistics.csv";
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function recognitionSummaryHtml() {
+  return `<section class="summaryCard">
+    <div class="summaryHeader">
+      <div>
+        <h2>Recognized Sample Names</h2>
+        <p>Local image recognition is heuristic. Use the confidence and notes as a quick check before sending a final report.</p>
+      </div>
+    </div>
+    <table class="summaryTable">
+      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Family</th><th>Variant</th><th>Measured step um</th><th>Date/time</th><th>Confidence</th></tr></thead>
+      <tbody>${results.map((r) => {
+        const rec = recognitionForRow(r);
+        return `<tr>
+          <td>${escapeHtml(rec.inspectionId || "-")}</td>
+          <td>${escapeHtml(rec.displayName)}</td>
+          <td>${escapeHtml(rec.family)}</td>
+          <td>${escapeHtml(rec.variant || "-")}</td>
+          <td>${fmt(r.heightDifference)}</td>
+          <td>${escapeHtml(r.date || "")}</td>
+          <td>${(rec.confidence * 100).toFixed(0)}%</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>
+  </section>`;
 }
 
 function exportPdfReport() {
@@ -1124,6 +1352,7 @@ function buildReportHtml() {
       th:first-child, td:first-child { text-align: left; }
       .cover { padding: 9mm 10mm 4mm; }
       .cover.withOverview { min-height: 203mm; page-break-after: always; }
+      .summaryPage { padding: 8mm 10mm; page-break-after: always; min-height: 203mm; }
       .setup { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 12px; margin-top: 8px; max-width: none; }
       .setup div { border-bottom: 1px solid #d8e0e8; padding: 3px 0; }
       .setup b { display: block; color: #536174; font-size: 9px; text-transform: uppercase; letter-spacing: .03em; }
@@ -1159,11 +1388,38 @@ function buildReportHtml() {
       <h1>PLUX Surface Analysis Report</h1>
       <p>Generated ${escapeHtml(generated)}. ${results.length} PLUX files processed. Average height step ${fmt(averageStep)} um.</p>
       ${reportOverviewHtml()}
-      <h2>Setup Parameters</h2>
-      <div class="setup">${optionRows.map(([k, v]) => `<div><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")}</div>
     </section>
+    ${reportSummaryPageHtml(optionRows)}
     ${results.map(reportSampleHtml).join("")}
   </body></html>`;
+}
+
+function reportSummaryPageHtml(optionRows) {
+  return `<section class="summaryPage">
+    <h1>Sample Summary</h1>
+    <p>Texture names are recognized locally from the loaded sample images. Confidence is a diagnostic value for checking the automatic labels.</p>
+    <h2>Setup Parameters</h2>
+    <div class="setup">${optionRows.map(([k, v]) => `<div><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")}</div>
+    <h2 style="margin-top:8px;">Recognized Sample Names and Statistics</h2>
+    <table>
+      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Variant</th><th>Date/time</th><th>Step um</th><th>Basin Sa</th><th>Basin Sq</th><th>Land Sa</th><th>Land Sq</th><th>Confidence</th></tr></thead>
+      <tbody>${results.map((r) => {
+        const rec = recognitionForRow(r);
+        return `<tr>
+          <td>${escapeHtml(rec.inspectionId || "-")}</td>
+          <td>${escapeHtml(rec.displayName)}</td>
+          <td>${escapeHtml(rec.variant || "-")}</td>
+          <td>${escapeHtml(r.date || "")}</td>
+          <td>${fmt(r.heightDifference)}</td>
+          <td>${fmt(r.low.Sa)}</td>
+          <td>${fmt(r.low.Sq)}</td>
+          <td>${fmt(r.high.Sa)}</td>
+          <td>${fmt(r.high.Sq)}</td>
+          <td>${(rec.confidence * 100).toFixed(0)}%</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>
+  </section>`;
 }
 
 function reportOverviewHtml() {
@@ -1179,10 +1435,12 @@ function reportOverviewHtml() {
 
 function reportSampleHtml(r, idx) {
   const start = r.sampleImageUrl ? 2 : 1;
+  const recognition = recognitionForRow(r);
   return `<section class="sample">
     <div class="sampleHeader">
       <div>
-        <h2>${idx + 1}. ${escapeHtml(r.name.split(/[\\/]/).pop())}</h2>
+        <h2>${idx + 1}. ${escapeHtml(recognition.inspectionId || r.name.split(/[\\/]/).pop())} - ${escapeHtml(recognition.displayName)}</h2>
+        <p>Recognition confidence ${(recognition.confidence * 100).toFixed(0)}%. ${escapeHtml(recognition.notes || "")}</p>
         <p>${reportSampleMeta(r)}</p>
       </div>
       <div class="stepValue">${fmt(r.heightDifference)} um step</div>

@@ -260,6 +260,31 @@ p {
   gap: 18px;
 }
 
+.summaryCard {
+  background: #ffffff;
+  border: 1px solid #d8e0e8;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.summaryHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.summaryTable td:nth-child(2),
+.summaryTable th:nth-child(2) {
+  text-align: left;
+}
+
+.recognitionLine {
+  color: #2f6f9f;
+  font-weight: 560;
+  margin: 3px 0;
+}
+
 .result {
   padding: 16px;
 }
