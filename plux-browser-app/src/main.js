@@ -347,7 +347,10 @@ async function expandUploads(files) {
   const addImage = (name, blob) => {
     if (addOverviewImage(name, blob)) return;
     const key = sampleKey(name);
-    if (key) images.set(key, { name, blob });
+    const priority = sampleImagePriority(name);
+    if (key && priority > -1000 && (!images.has(key) || priority > images.get(key).priority)) {
+      images.set(key, { name, blob, priority });
+    }
   };
   for (const file of files) {
     const name = file.webkitRelativePath || file.name;
@@ -371,6 +374,24 @@ async function expandUploads(files) {
     if (image) item.sampleImage = image;
   }
   return { items, overviewImages };
+}
+
+function sampleImagePriority(name) {
+  const normalized = String(name).replaceAll("\\", "/").toLowerCase();
+  const file = normalized.split("/").pop() || "";
+  if (
+    normalized.includes("/recognition-crops/") ||
+    normalized.includes("/recognition-crops-physical-ratio/") ||
+    normalized.includes("/report-prep-check/") ||
+    normalized.includes("/decoded-jpg/")
+  ) {
+    return -10000;
+  }
+  let priority = 0;
+  if (normalized.includes("/raw-sample-images/")) priority += 20;
+  if (/p\d{4}-raw-image\.(jpg|jpeg|png|webp)$/.test(file)) priority += 100;
+  if (/p\d{4}/.test(file)) priority += 10;
+  return priority;
 }
 
 function isImageName(name) {
@@ -1436,11 +1457,13 @@ function exportCsv(rows) {
 }
 
 function recognitionSummaryHtml() {
+  const recognizedCount = results.filter((r) => recognitionForRow(r).confidence > 0).length;
+  const sampleImageCount = results.filter((r) => r.sampleImageUrl).length;
   return `<section class="summaryCard">
     <div class="summaryHeader">
       <div>
         <h2>Recognized Sample Names</h2>
-        <p>Local image recognition is heuristic. Use the confidence and notes as a quick check before sending a final report.</p>
+        <p>Local image recognition is heuristic. Matched ${sampleImageCount}/${results.length} sample images and recognized ${recognizedCount}/${results.length}. Use the confidence and notes as a quick check before sending a final report.</p>
       </div>
     </div>
     <table class="summaryTable">
