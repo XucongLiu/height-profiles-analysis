@@ -432,52 +432,78 @@ async function recognizeSampleImage(blob, sourceName = "") {
   }
   try {
     const bitmap = await createImageBitmap(blob);
-    const size = 192;
+    const size = 320;
+    const side = Math.min(bitmap.width, bitmap.height);
+    const sx = Math.max(0, (bitmap.width - side) / 2);
+    const sy = 0;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(bitmap, 0, 0, size, size);
+    ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, size, size);
     bitmap.close?.();
     const data = ctx.getImageData(0, 0, size, size).data;
     const gray = new Float32Array(size * size);
-    const sampleMask = new Uint8Array(size * size);
-    let minX = size, minY = size, maxX = 0, maxY = 0, maskCount = 0;
+    const blue = new Uint8Array(size * size);
     for (let y = 0; y < size; y++) {
       for (let x = 0; x < size; x++) {
         const p = (y * size + x) * 4;
         const r = data[p], g = data[p + 1], b = data[p + 2];
         const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
         gray[y * size + x] = brightness;
-        const blueBackground = b > 85 && b > r * 1.18 && b > g * 1.1;
-        const metalOrDarkTexture = !blueBackground && brightness > 32;
-        if (metalOrDarkTexture) {
-          const idx = y * size + x;
-          sampleMask[idx] = 1;
-          maskCount++;
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-          minY = Math.min(minY, y);
-          maxY = Math.max(maxY, y);
-        }
+        if (b > 65 && b > r * 1.12 && b > g * 1.03) blue[y * size + x] = 1;
       }
     }
-    if (maskCount < size * size * 0.08) {
+
+    const imageCenter = size / 2;
+    let sxBlue = 0, syBlue = 0, nBlue = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = y * size + x;
+        if (!blue[idx]) continue;
+        const d = Math.hypot(x - imageCenter, y - imageCenter);
+        if (d > size * 0.28) continue;
+        sxBlue += x;
+        syBlue += y;
+        nBlue++;
+      }
+    }
+    if (nBlue < size * size * 0.01) {
       return {
         ...UNKNOWN_RECOGNITION,
         inspectionId: sampleKey(sourceName),
-        notes: "Sample circle was not detected clearly in the local image.",
+        notes: "The central blue hole was not detected clearly in the local sample image.",
       };
     }
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const outerR = Math.max(20, Math.min(maxX - minX, maxY - minY) * 0.5);
-    const innerR = outerR * 0.34;
-    const thetaBins = 180;
+    const cx = sxBlue / nBlue;
+    const cy = syBlue / nBlue;
+    const blueDistances = [];
+    const metalDistances = [];
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = y * size + x;
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > size * 0.55) continue;
+        if (blue[idx] && d < size * 0.32) blueDistances.push(d);
+        if (!blue[idx] && gray[idx] > 35 && d > size * 0.18) metalDistances.push(d);
+      }
+    }
+    const innerR = Math.max(size * 0.09, percentile(blueDistances, 92));
+    const outerR = Math.min(size * 0.47, Math.max(innerR * 2.35, percentile(metalDistances, 96)));
+    if (!Number.isFinite(innerR) || !Number.isFinite(outerR) || outerR <= innerR * 1.6) {
+      return {
+        ...UNKNOWN_RECOGNITION,
+        inspectionId: sampleKey(sourceName),
+        notes: "The washer annulus could not be isolated reliably in the local sample image.",
+      };
+    }
+
+    const thetaBins = 360;
     const angularDark = new Float32Array(thetaBins);
     const angularCount = new Uint16Array(thetaBins);
     const relHist = new Float32Array(18);
     let edgeWeight = 0, diagonalWeight = 0, radialWeight = 0, tangentialWeight = 0;
+    let ringPixels = 0;
 
     for (let y = 1; y < size - 1; y++) {
       for (let x = 1; x < size - 1; x++) {
@@ -485,7 +511,8 @@ async function recognizeSampleImage(blob, sourceName = "") {
         const dx = x - cx;
         const dy = y - cy;
         const rr = Math.hypot(dx, dy);
-        if (rr < innerR || rr > outerR || !sampleMask[idx]) continue;
+        if (rr < innerR * 1.12 || rr > outerR * 0.98 || blue[idx]) continue;
+        ringPixels++;
         const theta = Math.atan2(dy, dx);
         const bin = Math.max(0, Math.min(thetaBins - 1, Math.floor(((theta + Math.PI) / (2 * Math.PI)) * thetaBins)));
         angularDark[bin] += Math.max(0, 170 - gray[idx]);
@@ -513,12 +540,21 @@ async function recognizeSampleImage(blob, sourceName = "") {
     for (let i = 0; i < thetaBins; i++) {
       angularDark[i] = angularCount[i] ? angularDark[i] / angularCount[i] : 0;
     }
+    if (ringPixels < size * size * 0.05) {
+      return {
+        ...UNKNOWN_RECOGNITION,
+        inspectionId: sampleKey(sourceName),
+        notes: "Too few annular texture pixels were isolated from the local sample image.",
+      };
+    }
+    const smoothedDark = smoothCircular(angularDark, 2);
     const meanDark = angularDark.reduce((a, b) => a + b, 0) / thetaBins;
+    const darkStd = Math.sqrt(angularDark.reduce((acc, v) => acc + (v - meanDark) ** 2, 0) / thetaBins);
     let peakCount = 0;
     for (let i = 0; i < thetaBins; i++) {
-      const prev = angularDark[(i + thetaBins - 1) % thetaBins];
-      const next = angularDark[(i + 1) % thetaBins];
-      if (angularDark[i] > meanDark * 1.25 && angularDark[i] >= prev && angularDark[i] >= next) peakCount++;
+      const prev = smoothedDark[(i + thetaBins - 1) % thetaBins];
+      const next = smoothedDark[(i + 1) % thetaBins];
+      if (smoothedDark[i] > meanDark + darkStd * 0.45 && smoothedDark[i] >= prev && smoothedDark[i] >= next) peakCount++;
     }
     const total = edgeWeight || 1;
     const diagonalRatio = diagonalWeight / total;
@@ -531,8 +567,14 @@ async function recognizeSampleImage(blob, sourceName = "") {
     let family = "Rectangular pockets";
     let variant = "V2";
     let confidence = 0.48;
-    let notes = `Detected ${peakCount} repeated angular texture peaks.`;
-    if (diagonalRatio > 0.44 && diagonalBalance > 0.62) {
+    let notes = `Detected ${peakCount} repeated angular texture peaks after isolating the central annular texture band.`;
+    const manyCircumferentialRepeats = peakCount >= 18;
+    if (manyCircumferentialRepeats && (radialRatio + tangentialRatio) >= diagonalRatio * 0.72) {
+      family = "Rectangular pockets";
+      variant = peakCount < 45 ? "V1" : peakCount < 90 ? "V2" : "V3";
+      confidence = 0.72 + Math.min(0.18, peakCount / 360);
+      notes += " Many repeated annular pockets suggest rectangular pockets.";
+    } else if (diagonalRatio > 0.44 && diagonalBalance > 0.62) {
       family = "Chevron pockets";
       variant = peakCount < 52 ? "V1" : peakCount < 70 ? "V2" : "V3";
       confidence = 0.58 + Math.min(0.25, diagonalRatio * 0.25 + diagonalBalance * 0.12);
@@ -578,6 +620,24 @@ async function recognizeSampleImage(blob, sourceName = "") {
       notes: `Image recognition failed: ${error.message || error}`,
     };
   }
+}
+
+function smoothCircular(values, radius) {
+  const out = new Float32Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let d = -radius; d <= radius; d++) {
+      sum += values[(i + d + values.length) % values.length];
+      count++;
+    }
+    out[i] = sum / count;
+  }
+  return out;
+}
+
+async function recognizeTexture(row, sampleBlob = null) {
+  return sampleBlob ? await recognizeSampleImage(sampleBlob, row?.name || "") : recognitionForRow(row);
 }
 
 function textureVariantDescription(family, variant) {
@@ -1025,10 +1085,8 @@ async function analyzeWithWorkers(items, jobOptions) {
       if (item.sampleImage) {
         result.sampleImageName = item.sampleImage.name;
         result.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
-        result.recognition = await recognizeSampleImage(item.sampleImage.blob, item.name);
-      } else {
-        result.recognition = recognitionForRow(result);
       }
+      result.recognition = await recognizeTexture(result, item.sampleImage?.blob || null);
       completed[index] = result;
       done++;
       results = completed.filter(Boolean);
@@ -1083,10 +1141,8 @@ async function rerunSingleResult(resultIndex) {
     if (item.sampleImage) {
       updated.sampleImageName = item.sampleImage.name;
       updated.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
-      updated.recognition = await recognizeSampleImage(item.sampleImage.blob, item.name);
-    } else {
-      updated.recognition = recognitionForRow(updated);
     }
+    updated.recognition = await recognizeTexture(updated, item.sampleImage?.blob || null);
     releaseResultUrls([results[resultIndex]]);
     results[resultIndex] = updated;
     mapStatuses[resultIndex] = {
