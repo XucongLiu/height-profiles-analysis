@@ -605,6 +605,28 @@ tr:last-child td {
   border-radius: 5px;
 }
 
+.recognitionSelect {
+  width: 180px;
+  height: 32px;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #ffffff;
+  color: #17202a;
+  font-size: 13px;
+}
+
+.recognitionSelect.variantSelect {
+  width: 72px;
+}
+
+.smallAction {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 @media (max-width: 900px) {
   .app {
     width: min(100vw - 24px, 1480px);

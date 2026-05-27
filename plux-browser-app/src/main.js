@@ -24,6 +24,8 @@ const UNKNOWN_RECOGNITION = {
   notes: "No sample image was available for local image recognition.",
 };
 const SAMPLE_OUTER_TO_INNER_RADIUS = 31.7 / 15.5;
+const RECOGNITION_FAMILIES = ["Rectangular pockets", "Logarithmic spiral grooves", "Chevron pockets"];
+const RECOGNITION_VARIANTS = ["V1", "V2", "V3"];
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -446,6 +448,19 @@ function recognitionForRow(row) {
     ...row.recognition,
     inspectionId: row.recognition.inspectionId || fallback.inspectionId,
   };
+}
+
+function recognitionDisplayName(family, variant) {
+  const variantText = textureVariantDescription(family, variant);
+  return family && variant ? `${family} ${variant}${variantText ? ` - ${variantText}` : ""}` : "Unrecognized texture";
+}
+
+function recognitionConfidenceText(recognition) {
+  return recognition?.manual ? "N/A" : `${((recognition?.confidence || 0) * 100).toFixed(0)}%`;
+}
+
+function recognitionNotesText(recognition) {
+  return recognition?.manual ? "Manual override by user." : recognition?.notes || "";
 }
 
 async function recognizeSampleImage(blob, sourceName = "") {
@@ -1343,7 +1358,7 @@ function renderResults() {
       <header>
         <div>
           <h2>${escapeHtml(recognition.inspectionId || r.name.split(/[\\/]/).pop())} - ${escapeHtml(recognition.displayName)}</h2>
-          <p class="recognitionLine">Recognition confidence ${(recognition.confidence * 100).toFixed(0)}% - ${escapeHtml(recognition.notes || "")}</p>
+          <p class="recognitionLine">Recognition confidence ${recognitionConfidenceText(recognition)} - ${escapeHtml(recognitionNotesText(recognition))}</p>
           <p>${r.width} x ${r.height} pixels - measured ${(r.measuredFraction * 100).toFixed(1)}% - interpolated ${Number(r.interpolatedPoints || 0).toLocaleString()} points - leveling ${r.levelMode} - segmentation ${r.segmentationMode} - FFT denoise ${fmt(r.fftDenoiseStrength, 0)}% - boundary epsilon ${fmt(r.boundaryEpsilonPx, 0)} px - edge sigma ${fmt(r.edgeSigmaPx, 1)} px - ridge offset ${fmt(r.ridgeOffsetPx, 0)} px - minimum region ${fmt(r.minRegionPercent, 1)}% - centers ${r.clusterCenters.map((c) => fmt(c)).join(", ")} um</p>
         </div>
         <div class="resultActions">
@@ -1407,7 +1422,27 @@ function renderResults() {
   for (const button of content.querySelectorAll("[data-rerun]")) {
     button.onclick = () => rerunSingleResult(Number(button.dataset.rerun));
   }
+  for (const button of content.querySelectorAll("[data-apply-recognition]")) {
+    button.onclick = () => applyRecognitionOverride(Number(button.dataset.applyRecognition));
+  }
   updateSummary();
+}
+
+function applyRecognitionOverride(index) {
+  const row = results[index];
+  if (!row) return;
+  const family = document.getElementById(`manual-family-${index}`)?.value || "";
+  const variant = document.getElementById(`manual-variant-${index}`)?.value || "";
+  row.recognition = {
+    ...recognitionForRow(row),
+    family,
+    variant,
+    displayName: recognitionDisplayName(family, variant),
+    confidence: NaN,
+    manual: true,
+    notes: "Manual override by user.",
+  };
+  renderResults();
 }
 
 function mapStatusMarkup(idx) {
@@ -1438,7 +1473,7 @@ function exportCsv(rows) {
   const headers = ["file", "inspection_id", "recognized_name", "recognized_family", "recognized_variant", "recognition_confidence", "recognition_notes", "date", "width", "height", "level_mode", "segmentation_mode", "smooth_radius_px", "boundary_epsilon_px", "edge_sigma_px", "edge_percentile", "ridge_offset_px", "min_region_percent", "fft_denoise_percent", "interpolated_points", "measured_fraction", "low_mean_um", "low_Sa_um", "low_Sq_um", "low_points", "low_area_percent", "low_area_pixels", "low_polygon_count", "low_polygon_areas_percent", "low_polygon_areas_pixels", "high_mean_um", "high_Sa_um", "high_Sq_um", "high_points", "high_area_percent", "high_area_pixels", "high_polygon_count", "high_polygon_areas_percent", "high_polygon_areas_pixels", "height_difference_um", "cluster_centers_um", "objective"];
   const body = rows.map((r) => {
     const rec = recognitionForRow(r);
-    return [r.name, rec.inspectionId, rec.displayName, rec.family, rec.variant, rec.confidence, rec.notes, r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.boundaryEpsilonPx, r.edgeSigmaPx, r.edgePercentile, r.ridgeOffsetPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective];
+    return [r.name, rec.inspectionId, rec.displayName, rec.family, rec.variant, recognitionConfidenceText(rec), recognitionNotesText(rec), r.date, r.width, r.height, r.levelMode, r.segmentationMode, r.smoothRadiusPx, r.boundaryEpsilonPx, r.edgeSigmaPx, r.edgePercentile, r.ridgeOffsetPx, r.minRegionPercent, r.fftDenoiseStrength, r.interpolatedPoints, r.measuredFraction, r.low.mean, r.low.Sa, r.low.Sq, r.low.points, r.lowArea?.percent, r.lowArea?.pixels, r.lowArea?.components?.length || 0, (r.lowArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.lowArea?.components || []).map((c) => c.areaPx).join("; "), r.high.mean, r.high.Sa, r.high.Sq, r.high.points, r.highArea?.percent, r.highArea?.pixels, r.highArea?.components?.length || 0, (r.highArea?.components || []).map((c) => fmt(c.areaPercent, 4)).join("; "), (r.highArea?.components || []).map((c) => c.areaPx).join("; "), r.heightDifference, r.clusterCenters.map((c) => fmt(c, 4)).join("; "), r.objective];
   });
   const csv = [headers, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -1450,7 +1485,10 @@ function exportCsv(rows) {
 }
 
 function recognitionSummaryHtml() {
-  const recognizedCount = results.filter((r) => recognitionForRow(r).confidence > 0).length;
+  const recognizedCount = results.filter((r) => {
+    const rec = recognitionForRow(r);
+    return rec.manual || rec.confidence > 0;
+  }).length;
   const sampleImageCount = results.filter((r) => r.sampleImageUrl).length;
   return `<section class="summaryCard">
     <div class="summaryHeader">
@@ -1460,17 +1498,18 @@ function recognitionSummaryHtml() {
       </div>
     </div>
     <table class="summaryTable">
-      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Family</th><th>Variant</th><th>Measured step um</th><th>Date/time</th><th>Confidence</th></tr></thead>
-      <tbody>${results.map((r) => {
+      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Family</th><th>Variant</th><th>Apply</th><th>Measured step um</th><th>Date/time</th><th>Confidence</th></tr></thead>
+      <tbody>${results.map((r, index) => {
         const rec = recognitionForRow(r);
         return `<tr>
           <td>${escapeHtml(rec.inspectionId || "-")}</td>
           <td>${recognitionHoverCell(rec)}</td>
-          <td>${escapeHtml(rec.family)}</td>
-          <td>${escapeHtml(rec.variant || "-")}</td>
+          <td>${recognitionFamilySelect(index, rec.family)}</td>
+          <td>${recognitionVariantSelect(index, rec.variant)}</td>
+          <td><button class="smallAction" data-apply-recognition="${index}">Apply</button></td>
           <td>${fmt(r.heightDifference)}</td>
           <td>${escapeHtml(r.date || "")}</td>
-          <td>${(rec.confidence * 100).toFixed(0)}%</td>
+          <td>${recognitionConfidenceText(rec)}</td>
         </tr>`;
       }).join("")}</tbody>
     </table>
@@ -1487,6 +1526,14 @@ function recognitionHoverCell(recognition) {
       <span><img src="${debug.unwrapUrl}" alt="" />Unwrapped annulus</span>
     </span>
   </span>`;
+}
+
+function recognitionFamilySelect(index, family) {
+  return `<select class="recognitionSelect" id="manual-family-${index}" aria-label="Manual texture family">${RECOGNITION_FAMILIES.map((item) => `<option value="${escapeHtml(item)}" ${item === family ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select>`;
+}
+
+function recognitionVariantSelect(index, variant) {
+  return `<select class="recognitionSelect variantSelect" id="manual-variant-${index}" aria-label="Manual texture variant">${RECOGNITION_VARIANTS.map((item) => `<option value="${escapeHtml(item)}" ${item === variant ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select>`;
 }
 
 function exportPdfReport() {
@@ -1596,7 +1643,7 @@ function reportSummaryPageHtml(optionRows) {
           <td>${fmt(r.low.Sq)}</td>
           <td>${fmt(r.high.Sa)}</td>
           <td>${fmt(r.high.Sq)}</td>
-          <td>${(rec.confidence * 100).toFixed(0)}%</td>
+          <td>${recognitionConfidenceText(rec)}</td>
         </tr>`;
       }).join("")}</tbody>
     </table>
@@ -1622,7 +1669,7 @@ function reportSampleHtml(r, idx) {
     <div class="sampleHeader">
       <div>
         <h2>${idx + 1}. ${escapeHtml(recognition.inspectionId || r.name.split(/[\\/]/).pop())} - ${escapeHtml(recognition.displayName)}</h2>
-        <p>Recognition confidence ${(recognition.confidence * 100).toFixed(0)}%. ${escapeHtml(recognition.notes || "")}</p>
+        <p>Recognition confidence ${recognitionConfidenceText(recognition)}. ${escapeHtml(recognitionNotesText(recognition))}</p>
         <p>${reportSampleMeta(r)}</p>
       </div>
       <div class="stepValue">${fmt(r.heightDifference)} um step</div>
