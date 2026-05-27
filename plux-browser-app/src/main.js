@@ -100,6 +100,7 @@ function renderShell() {
         <div class="topActions">
           <button id="rerunBtn" disabled>${icon("sliders")}Rerun Analysis</button>
           <button class="export" id="pdfBtn" disabled>${icon("export")}PDF Report</button>
+          <button class="export" id="excelBtn" disabled>${icon("export")}Excel Report</button>
           <button class="export" id="exportBtn" disabled>${icon("export")}Export CSV</button>
         </div>
       </section>
@@ -160,6 +161,7 @@ function renderShell() {
   document.getElementById("fileInput").onchange = (event) => handleFiles(event.target.files);
   document.getElementById("rerunBtn").onclick = () => rerunAnalysis();
   document.getElementById("pdfBtn").onclick = () => exportPdfReport();
+  document.getElementById("excelBtn").onclick = () => exportExcelReport();
   document.getElementById("exportBtn").onclick = () => exportCsv(results);
   for (const id of ["detrend", "levelMode", "clusters", "clipPercent", "edgeRadiusPx", "segmentationMode", "smoothRadiusPx", "boundaryEpsilonPx", "edgeSigmaPx", "edgePercentile", "ridgeOffsetPx", "minRegionPercent", "fftDenoiseStrength", "workerCount"]) {
     document.getElementById(id).onchange = () => {
@@ -220,9 +222,11 @@ function setStatus(text, busy = false) {
 function updateSummary() {
   const exportBtn = document.getElementById("exportBtn");
   const pdfBtn = document.getElementById("pdfBtn");
+  const excelBtn = document.getElementById("excelBtn");
   const rerunBtn = document.getElementById("rerunBtn");
   exportBtn.disabled = !results.length;
   pdfBtn.disabled = !results.length;
+  excelBtn.disabled = !results.length;
   rerunBtn.disabled = !lastUploadFiles.length || isAnalyzing;
   const summary = document.getElementById("summary");
   if (!results.length) {
@@ -410,6 +414,7 @@ function imageMimeType(name) {
 
 function overviewImageKind(name) {
   const file = String(name).split(/[\\/]/).pop()?.toLowerCase() || "";
+  if (file.includes("contact-sheet") || file.includes("contact sheet")) return "contact";
   if (!file.includes("inspection samples id")) return "";
   if (file.includes("raw")) return "raw";
   if (file.includes("labelled") || file.includes("labeled")) return "labelled";
@@ -1714,6 +1719,331 @@ function reportLegendHtml() {
     <span><i class="swatch basinContour"></i>Cyan basin region outline</span>
     <span><i class="swatch landContour"></i>White land region outline</span>
   </span>`;
+}
+
+async function exportExcelReport() {
+  if (!results.length) return;
+  setStatus("Building Excel report locally...", true);
+  try {
+    const blob = await buildExcelWorkbook();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `plux_surface_analysis_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus("Excel report exported.");
+  } catch (error) {
+    console.error(error);
+    setStatus(`Excel export failed: ${error.message || error}`);
+  }
+}
+
+async function buildExcelWorkbook() {
+  const sheets = [];
+  const media = [];
+  const addImage = async (url, name = "image") => {
+    if (!url) return null;
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const mime = blob.type || imageMimeType(name);
+    const ext = mime.includes("png") ? "png" : "jpeg";
+    const size = await imagePixelSize(url).catch(() => ({ width: 900, height: 520 }));
+    const id = media.length + 1;
+    media.push({ id, path: `xl/media/image${id}.${ext}`, mime, ext, bytes, width: size.width, height: size.height });
+    return id;
+  };
+
+  const homeImages = [];
+  if (reportOverviewImages.raw) homeImages.push({ caption: "Inspection samples ID - raw", imageId: await addImage(reportOverviewImages.raw.url, reportOverviewImages.raw.name), row: Math.max(36, results.length + 5), col: 1 });
+  if (reportOverviewImages.labelled) homeImages.push({ caption: "Inspection samples ID - labelled P00xx", imageId: await addImage(reportOverviewImages.labelled.url, reportOverviewImages.labelled.name), row: Math.max(36, results.length + 5), col: 8 });
+  if (reportOverviewImages.contact) homeImages.push({ caption: "Texture template contact sheet", imageId: await addImage(reportOverviewImages.contact.url, reportOverviewImages.contact.name), row: Math.max(58, results.length + 27), col: 1 });
+  sheets.push(makeHomeSheet(homeImages));
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const plotImages = [];
+    if (r.sampleImageUrl) plotImages.push({ caption: "Raw sample image", imageId: await addImage(r.sampleImageUrl, r.sampleImageName), row: 5, col: 1 });
+    plotImages.push({ caption: "Raw height map", imageId: await addImage((r.rawHeatmap || r.heatmap).url, "raw-height.png"), row: 5, col: r.sampleImageUrl ? 5 : 1 });
+    plotImages.push({ caption: "Detrended height map", imageId: await addImage((r.detrendedHeatmap || r.heatmap).url, "detrended-height.png"), row: 5, col: r.sampleImageUrl ? 9 : 5 });
+    plotImages.push({ caption: "Detrended + interpolated height map", imageId: await addImage((r.interpolatedHeatmap || r.heatmap).url, "interpolated-height.png"), row: 5, col: r.sampleImageUrl ? 13 : 9 });
+    plotImages.push({ caption: "Measurement mask", imageId: await addImage(r.maskUrl, "mask.png"), row: 5, col: r.sampleImageUrl ? 17 : 13 });
+    sheets.push(makeDetailSheet(r, i, plotImages));
+  }
+
+  return writeXlsxZip(makeWorkbookParts(sheets, media));
+}
+
+function makeHomeSheet(images) {
+  const rows = [
+    rowXml(1, [
+      cell("A1", "no", 1),
+      cell("B1", "inspection_id", 1),
+      cell("C1", "family", 1),
+      cell("D1", "variant", 1),
+      cell("E1", "height_difference_um", 1),
+      cell("F1", "depth_description", 1),
+      cell("G1", "recognized_name", 1),
+      cell("H1", "comments", 1),
+      cell("I1", "notes", 1),
+      cell("J1", "missing", 1),
+    ]),
+  ];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const rec = recognitionForRow(r);
+    const sheetName = detailSheetName(i);
+    const depth = depthDescription(r.heightDifference);
+    rows.push(rowXml(i + 2, [
+      cell(`A${i + 2}`, i + 1),
+      formulaCell(`B${i + 2}`, `HYPERLINK("#'${sheetName}'!A1","${xmlEscape(rec.inspectionId || sheetName)}")`, rec.inspectionId || sheetName, 2),
+      cell(`C${i + 2}`, rec.family || ""),
+      cell(`D${i + 2}`, rec.variant || ""),
+      cell(`E${i + 2}`, r.heightDifference),
+      cell(`F${i + 2}`, depth.text, depth.style),
+      cell(`G${i + 2}`, rec.displayName || ""),
+      cell(`H${i + 2}`, ""),
+      cell(`I${i + 2}`, recognitionNotesText(rec)),
+      cell(`J${i + 2}`, ""),
+    ]));
+  }
+  const drawing = images.filter((img) => img.imageId).map((img, index) => ({
+    imageId: img.imageId,
+    col: img.col,
+    row: img.row,
+    widthPx: 560,
+    heightPx: 300,
+    name: img.caption,
+    relId: `rId${index + 1}`,
+  }));
+  return {
+    name: "Home",
+    xml: worksheetXml(rows, {
+      cols: [[1, 1, 8], [2, 2, 14], [3, 3, 24], [4, 4, 12], [5, 5, 20], [6, 6, 22], [7, 7, 42], [8, 10, 18]],
+      drawing,
+    }),
+    drawing,
+  };
+}
+
+function makeDetailSheet(r, index, images) {
+  const rec = recognitionForRow(r);
+  const sheetName = detailSheetName(index);
+  const rows = [
+    rowXml(1, [formulaCell("A1", 'HYPERLINK("#Home!A1","Home")', "Home", 2)]),
+    rowXml(2, [cell("A2", `${rec.inspectionId || sheetName} - ${rec.displayName}`, 1)]),
+    rowXml(3, [cell("A3", reportSampleMeta(r))]),
+    rowXml(23, images.map((img, i) => cell(`${colName(i * 4 + 1)}23`, img.caption, 1))),
+    rowXml(25, [cell("A25", "Region", 1), cell("B25", "Mean um", 1), cell("C25", "Sa um", 1), cell("D25", "Sq um", 1), cell("E25", "Sz um", 1), cell("F25", "Points", 1), cell("G25", "Area %", 1), cell("H25", "Area px", 1), cell("I25", "Polygons", 1)]),
+    rowXml(26, statsRow("26", "Lower basin", r.low, r.lowArea)),
+    rowXml(27, statsRow("27", "Higher land", r.high, r.highArea)),
+  ];
+  const drawing = images.filter((img) => img.imageId).map((img, imageIndex) => ({
+    imageId: img.imageId,
+    col: img.col,
+    row: img.row,
+    widthPx: 300,
+    heightPx: 220,
+    name: img.caption,
+    relId: `rId${imageIndex + 1}`,
+  }));
+  return {
+    name: sheetName,
+    xml: worksheetXml(rows, {
+      cols: [[1, 1, 13], [2, 9, 13], [10, 20, 12]],
+      drawing,
+    }),
+    drawing,
+  };
+}
+
+function statsRow(rowNumber, label, stats, area) {
+  return [
+    cell(`A${rowNumber}`, label),
+    cell(`B${rowNumber}`, stats.mean),
+    cell(`C${rowNumber}`, stats.Sa),
+    cell(`D${rowNumber}`, stats.Sq),
+    cell(`E${rowNumber}`, stats.Sz),
+    cell(`F${rowNumber}`, stats.points),
+    cell(`G${rowNumber}`, area?.percent),
+    cell(`H${rowNumber}`, area?.pixels),
+    cell(`I${rowNumber}`, area?.components?.length || 0),
+  ];
+}
+
+function depthDescription(value) {
+  if (value < 20) return { text: "shallow", style: 3 };
+  if (value <= 30) return { text: "medium", style: 4 };
+  return { text: "deep", style: 5 };
+}
+
+function detailSheetName(index) {
+  return String(index + 1).padStart(2, "0");
+}
+
+function worksheetXml(rows, { cols = [], drawing = [] } = {}) {
+  const colsXml = cols.length ? `<cols>${cols.map(([min, max, width]) => `<col min="${min}" max="${max}" width="${width}" customWidth="1"/>`).join("")}</cols>` : "";
+  const drawingXml = drawing.length ? `<drawing r:id="rId1"/>` : "";
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  ${colsXml}
+  <sheetData>${rows.join("")}</sheetData>
+  ${drawingXml}
+</worksheet>`;
+}
+
+function rowXml(rowNumber, cells) {
+  return `<row r="${rowNumber}">${cells.join("")}</row>`;
+}
+
+function cell(ref, value, style = 0) {
+  if (value === null || value === undefined || value === "") return `<c r="${ref}"${style ? ` s="${style}"` : ""}/>`;
+  if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"${style ? ` s="${style}"` : ""}><v>${value}</v></c>`;
+  return `<c r="${ref}" t="inlineStr"${style ? ` s="${style}"` : ""}><is><t>${xmlEscape(value)}</t></is></c>`;
+}
+
+function formulaCell(ref, formula, cached, style = 0) {
+  return `<c r="${ref}" t="str"${style ? ` s="${style}"` : ""}><f>${formula}</f><v>${xmlEscape(cached)}</v></c>`;
+}
+
+function colName(index) {
+  let n = index;
+  let out = "";
+  while (n > 0) {
+    const mod = (n - 1) % 26;
+    out = String.fromCharCode(65 + mod) + out;
+    n = Math.floor((n - mod) / 26);
+  }
+  return out;
+}
+
+function xmlEscape(value) {
+  return String(value ?? "").replace(/[<>&'"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[ch]));
+}
+
+function imagePixelSize(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth || 900, height: img.naturalHeight || 520 });
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function makeWorkbookParts(sheets, media) {
+  const parts = {
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, i) => `<sheet name="${xmlEscape(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets></workbook>`,
+    "xl/styles.xml": excelStylesXml(),
+  };
+  for (let i = 0; i < sheets.length; i++) {
+    const sheet = sheets[i];
+    parts[`xl/worksheets/sheet${i + 1}.xml`] = sheet.xml;
+    if (sheet.drawing?.length) {
+      parts[`xl/worksheets/_rels/sheet${i + 1}.xml.rels`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${i + 1}.xml"/></Relationships>`;
+      parts[`xl/drawings/drawing${i + 1}.xml`] = drawingXml(sheet.drawing);
+      parts[`xl/drawings/_rels/drawing${i + 1}.xml.rels`] = drawingRelsXml(sheet.drawing, media);
+    }
+  }
+  for (const item of media) parts[item.path] = item.bytes;
+  parts["[Content_Types].xml"] = contentTypesXml(sheets, media);
+  return parts;
+}
+
+function excelStylesXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><u/><color rgb="FF0563A6"/><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EEF7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDF2D4"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" applyFill="1"/></cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+}
+
+function drawingXml(items) {
+  const emu = 9525;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${items.map((item, i) => `<xdr:oneCellAnchor><xdr:from><xdr:col>${item.col - 1}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${item.row - 1}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${Math.round(item.widthPx * emu)}" cy="${Math.round(item.heightPx * emu)}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${i + 1}" name="${xmlEscape(item.name)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${item.relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`).join("")}</xdr:wsDr>`;
+}
+
+function drawingRelsXml(items, media) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items.map((item) => {
+    const mediaItem = media.find((m) => m.id === item.imageId);
+    const target = mediaItem ? `../media/image${mediaItem.id}.${mediaItem.ext}` : "";
+    return `<Relationship Id="${item.relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${target}"/>`;
+  }).join("")}</Relationships>`;
+}
+
+function contentTypesXml(sheets, media) {
+  const imageDefaults = [...new Set(media.map((item) => item.ext))].map((ext) => `<Default Extension="${ext}" ContentType="image/${ext === "jpeg" ? "jpeg" : ext}"/>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${imageDefaults}<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}${sheets.map((sheet, i) => sheet.drawing?.length ? `<Override PartName="/xl/drawings/drawing${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>` : "").join("")}</Types>`;
+}
+
+function writeXlsxZip(parts) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const pushBytes = (array, ...items) => {
+    for (const item of items) array.push(item instanceof Uint8Array ? item : encoder.encode(item));
+  };
+  for (const [path, content] of Object.entries(parts)) {
+    const nameBytes = encoder.encode(path);
+    const data = content instanceof Uint8Array ? content : encoder.encode(content);
+    const crc = crc32(data);
+    const local = new Uint8Array(30);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(8, 0, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, data.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    pushBytes(localParts, local, nameBytes, data);
+
+    const central = new Uint8Array(46);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint32(42, offset, true);
+    pushBytes(centralParts, central, nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  }
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, Object.keys(parts).length, true);
+  ev.setUint16(10, Object.keys(parts).length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, offset, true);
+  return new Blob([...localParts, ...centralParts, eocd], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 renderShell();
