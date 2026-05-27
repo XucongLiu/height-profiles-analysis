@@ -1498,7 +1498,7 @@ function recognitionSummaryHtml() {
       </div>
     </div>
     <table class="summaryTable">
-      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Family</th><th>Variant</th><th>Apply</th><th>Measured step um</th><th>Date/time</th><th>Confidence</th></tr></thead>
+      <thead><tr><th>Inspection ID</th><th>Recognized texture</th><th>Family</th><th>Variant</th><th>Overwrite</th><th>Measured step um</th><th>Date/time</th><th>Confidence</th></tr></thead>
       <tbody>${results.map((r, index) => {
         const rec = recognitionForRow(r);
         return `<tr>
@@ -1506,7 +1506,7 @@ function recognitionSummaryHtml() {
           <td>${recognitionHoverCell(rec)}</td>
           <td>${recognitionFamilySelect(index, rec.family)}</td>
           <td>${recognitionVariantSelect(index, rec.variant)}</td>
-          <td><button class="smallAction" data-apply-recognition="${index}">Apply</button></td>
+          <td><button class="smallAction" data-apply-recognition="${index}">Overwrite</button></td>
           <td>${fmt(r.heightDifference)}</td>
           <td>${escapeHtml(r.date || "")}</td>
           <td>${recognitionConfidenceText(rec)}</td>
