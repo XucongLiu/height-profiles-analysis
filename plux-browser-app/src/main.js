@@ -26,6 +26,7 @@ const UNKNOWN_RECOGNITION = {
 const SAMPLE_OUTER_TO_INNER_RADIUS = 31.7 / 15.5;
 const RECOGNITION_FAMILIES = ["Rectangular pockets", "Logarithmic spiral grooves", "Chevron pockets"];
 const RECOGNITION_VARIANTS = ["V1", "V2", "V3"];
+const IDENTITY_STORAGE_PREFIX = "pluxIdentity:v1:";
 let options = {
   detrend: true,
   levelMode: "higher-land",
@@ -361,14 +362,16 @@ async function expandUploads(files) {
   for (const file of files) {
     const name = file.webkitRelativePath || file.name;
     if (file.name.toLowerCase().endsWith(".plux")) {
-      items.push({ name, buffer: await file.arrayBuffer() });
+      const buffer = await file.arrayBuffer();
+      items.push({ name, buffer, fileHash: await sha256Hex(buffer) });
     } else if (isImageName(file.name)) {
       addImage(name, file);
     } else if (file.name.toLowerCase().endsWith(".zip")) {
       const zip = await readZipEntries(await file.arrayBuffer());
       for (const [entryName, entry] of Object.entries(zip)) {
         if (entryName.toLowerCase().endsWith(".plux")) {
-          items.push({ name: `${file.name}/${entryName}`, buffer: await entry.arrayBuffer() });
+          const buffer = await entry.arrayBuffer();
+          items.push({ name: `${file.name}/${entryName}`, buffer, fileHash: await sha256Hex(buffer) });
         } else if (isImageName(entryName)) {
           addImage(`${file.name}/${entryName}`, new Blob([await entry.arrayBuffer()], { type: imageMimeType(entryName) }));
         }
@@ -380,6 +383,12 @@ async function expandUploads(files) {
     if (image) item.sampleImage = image;
   }
   return { items, overviewImages };
+}
+
+async function sha256Hex(buffer) {
+  if (!crypto?.subtle) return "";
+  const digest = await crypto.subtle.digest("SHA-256", buffer.slice(0));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function sampleImagePriority(name) {
@@ -465,7 +474,105 @@ function recognitionConfidenceText(recognition) {
 }
 
 function recognitionNotesText(recognition) {
+  if (recognition?.savedIdentity) return "Loaded saved manual identity.";
   return recognition?.manual ? "Manual override by user." : recognition?.notes || "";
+}
+
+function recognitionIdentityKeys(row) {
+  const keys = [];
+  if (row?.fileHash) keys.push(`sha256:${row.fileHash}`);
+  const inspectionId = recognitionForRow(row).inspectionId || sampleInspectionId(row);
+  if (inspectionId) keys.push(`sample:${inspectionId}`);
+  return [...new Set(keys)];
+}
+
+function savedIdentityToRecognition(saved, fallback) {
+  if (!saved?.family || !saved?.variant) return null;
+  const family = saved.family;
+  const variant = saved.variant;
+  return {
+    ...fallback,
+    family,
+    variant,
+    displayName: saved.displayName || recognitionDisplayName(family, variant),
+    confidence: NaN,
+    manual: true,
+    savedIdentity: true,
+    notes: `Loaded saved manual identity${saved.updatedAt ? ` from ${saved.updatedAt}` : ""}.`,
+  };
+}
+
+async function applySavedIdentity(row) {
+  const fallback = recognitionForRow(row);
+  for (const key of recognitionIdentityKeys(row)) {
+    const saved = await loadIdentityRecord(key);
+    const recognition = savedIdentityToRecognition(saved, fallback);
+    if (recognition) {
+      row.recognition = recognition;
+      return true;
+    }
+  }
+  return false;
+}
+
+async function loadIdentityRecord(key) {
+  const local = readLocalIdentity(key);
+  try {
+    const response = await fetch(`/api/identity/${encodeURIComponent(key)}`, { headers: { accept: "application/json" } });
+    if (response.ok) {
+      const remote = await response.json();
+      if (remote?.found && remote.identity) {
+        writeLocalIdentity(key, remote.identity);
+        return remote.identity;
+      }
+    }
+  } catch {
+    // Local http-server and file preview do not serve Cloudflare Pages Functions.
+  }
+  return local;
+}
+
+async function saveIdentityRecord(row) {
+  const recognition = recognitionForRow(row);
+  if (!recognition?.family || !recognition?.variant) return;
+  const identity = {
+    inspectionId: recognition.inspectionId || sampleInspectionId(row),
+    family: recognition.family,
+    variant: recognition.variant,
+    displayName: recognition.displayName || recognitionDisplayName(recognition.family, recognition.variant),
+    source: "manual",
+    updatedAt: new Date().toISOString(),
+  };
+  const keys = recognitionIdentityKeys(row);
+  for (const key of keys) {
+    writeLocalIdentity(key, identity);
+    try {
+      await fetch(`/api/identity/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(identity),
+      });
+    } catch {
+      // Keep localStorage as the offline fallback.
+    }
+  }
+}
+
+function readLocalIdentity(key) {
+  try {
+    const raw = localStorage.getItem(`${IDENTITY_STORAGE_PREFIX}${key}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalIdentity(key, identity) {
+  try {
+    localStorage.setItem(`${IDENTITY_STORAGE_PREFIX}${key}`, JSON.stringify(identity));
+  } catch {
+    // Ignore private-mode or storage-full failures.
+  }
 }
 
 async function recognizeSampleImage(blob, sourceName = "") {
@@ -1213,11 +1320,13 @@ async function analyzeWithWorkers(items, jobOptions) {
       setStatus(`Processing ${done + 1}-${Math.min(done + workerTotal, items.length)}/${items.length} with ${workerTotal} CPU workers...`, true);
       const result = await runWorkerJob(worker, item, jobOptions, `${lane}-${index}`);
       result.sourceName = item.name;
+      result.fileHash = item.fileHash;
       if (item.sampleImage) {
         result.sampleImageName = item.sampleImage.name;
         result.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
       }
       result.recognition = await recognizeTexture(result, item.sampleImage?.blob || null);
+      await applySavedIdentity(result);
       completed[index] = result;
       done++;
       results = completed.filter(Boolean);
@@ -1269,11 +1378,13 @@ async function rerunSingleResult(resultIndex) {
     if (!item) throw new Error(`Could not find the local source for ${current.name}. Load the file again, then rerun.`);
     const updated = await analyzeSingleItem(item, localOptions);
     updated.sourceName = item.name;
+    updated.fileHash = item.fileHash;
     if (item.sampleImage) {
       updated.sampleImageName = item.sampleImage.name;
       updated.sampleImageUrl = URL.createObjectURL(item.sampleImage.blob);
     }
     updated.recognition = await recognizeTexture(updated, item.sampleImage?.blob || null);
+    await applySavedIdentity(updated);
     releaseResultUrls([results[resultIndex]]);
     results[resultIndex] = updated;
     mapStatuses[resultIndex] = {
@@ -1433,7 +1544,7 @@ function renderResults() {
   updateSummary();
 }
 
-function applyRecognitionOverride(index) {
+async function applyRecognitionOverride(index) {
   const row = results[index];
   if (!row) return;
   const family = document.getElementById(`manual-family-${index}`)?.value || "";
@@ -1445,8 +1556,10 @@ function applyRecognitionOverride(index) {
     displayName: recognitionDisplayName(family, variant),
     confidence: NaN,
     manual: true,
+    savedIdentity: false,
     notes: "Manual override by user.",
   };
+  await saveIdentityRecord(row);
   renderResults();
 }
 

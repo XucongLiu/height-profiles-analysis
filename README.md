@@ -63,3 +63,12 @@ Launcher test modes:
 - Node.js with `npx`
 
 No measurement data is stored in this repository. Large/confidential files such as `.plux`, `.raw`, `.sur`, manuals, and local working directories are ignored by Git.
+
+## Remembering Manual Texture Identities
+
+When a user overwrites a recognized texture name, the app saves that manual identity locally in the browser. If the app is deployed on Cloudflare Pages with a KV binding named `PLUX_IDENTITIES`, it also stores the identity in KV using:
+
+- `sha256:<plux file hash>` for the exact `.plux` file
+- `sample:<inspection id>` as a fallback when the same inspection ID appears again
+
+Only the hash and selected texture identity are stored. The `.plux` measurement file itself is not uploaded.
